@@ -264,6 +264,37 @@ class OllamaEngine:
         produtos_nomes = ctx.get("produtos_nomes", [])
         produtos_lista = ctx.get("produtos", [])
 
+        # ── 0. SISTEMA MULTI-AGENTE ESPECIALISTA (ROTEAMENTO E FERRAMENTAS) ──
+        try:
+            from ania_agents import MultiAgentOrchestrator
+            orch = MultiAgentOrchestrator()
+            agent_res = orch.route_and_process(prompt, ctx, {"username": user_name}, history=history)
+            if agent_res and agent_res.handled and agent_res.confidence >= 0.90:
+                if agent_res.action:
+                    res_dict = {
+                        "action": agent_res.action,
+                        "params": agent_res.params,
+                        "confidence": agent_res.confidence,
+                        "_elapsed_ms": round((time.time() - start_t) * 1000, 1),
+                        "_model": f"{self.model} (IA Multi-Agente Local)"
+                    }
+                    if agent_res.text_response:
+                        res_dict["text_response"] = agent_res.text_response
+                    if agent_res.sub_tasks:
+                        res_dict["acoes"] = agent_res.sub_tasks
+                    return res_dict
+                elif agent_res.text_response:
+                    return {
+                        "action": "conversar_direto",
+                        "reply": agent_res.text_response,
+                        "voice_text": agent_res.text_response.splitlines()[0] if agent_res.text_response else "Aqui está a resposta.",
+                        "suggestions": ["🧵 Dicas de Costura", "📦 Consultar estoque", "🧾 Pedidos", "💰 Precificação"],
+                        "_elapsed_ms": round((time.time() - start_t) * 1000, 1),
+                        "_model": f"{self.model} (IA Multi-Agente Local)"
+                    }
+        except Exception:
+            pass
+
         # ── RESOLUÇÃO DE REFERÊNCIAS DO HISTÓRICO (MULTI-TURN) ────────────────
         ultimo_produto_mencionado = None
         ultimo_cliente_mencionado = None

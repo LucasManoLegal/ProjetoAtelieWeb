@@ -34,6 +34,11 @@ class AniaAssistant:
     def __init__(self, app_context, ollama_engine: Optional[OllamaEngine] = None):
         self.app = app_context
         self.ollama = ollama_engine or OllamaEngine()
+        try:
+            from ania_agents import MultiAgentOrchestrator
+            self.orchestrator = MultiAgentOrchestrator(assistant_context=self, ollama_engine=self.ollama)
+        except Exception:
+            self.orchestrator = None
 
     def _get_roles(self, user: dict) -> list:
         fn = self._get_helper('usuario_roles_lista')
@@ -108,11 +113,11 @@ class AniaAssistant:
 
     @property
     def _use_sqlite(self):
-        return getattr(self.app, 'USE_SQLITE', True)
+        return self._get_helper('USE_SQLITE', True)
 
     @property
     def _db_path(self):
-        return getattr(self.app, 'DB_PATH', 'atelie.db')
+        return self._get_helper('DB_PATH', 'atelie.db')
 
     def processar_mensagem(self, prompt: str, user: dict, history: Optional[list] = None, mode: Optional[str] = None) -> dict:
         """
@@ -175,6 +180,8 @@ class AniaAssistant:
 
                 despacho = self._despachar_acao_ollama(action, params, prompt_orig, user, ollama_res)
                 if despacho:
+                    if "success" not in despacho:
+                        despacho["success"] = not bool(despacho.get("denied"))
                     despacho["engine"] = "ollama"
                     despacho["model"] = ollama_res.get("_model", self.ollama.model)
                     if "_elapsed_ms" in ollama_res:
@@ -352,15 +359,65 @@ class AniaAssistant:
                 return self._resposta_negada(user_nome, roles_str, "relatorios", "read", "gerar e baixar relatórios em PDF")
             return self._gerar_relatorio_pdf()
 
-        if action == "gerar_exportacao_excel":
+        if action in ("gerar_exportacao_excel", "exportar_excel"):
             if not self._tem_permissao(user, "relatorios", "read"):
                 return self._resposta_negada(user_nome, roles_str, "relatorios", "read", "exportar planilhas Excel")
             return self._gerar_exportacao_excel()
 
-        if action == "gerar_backup_json":
+        if action in ("gerar_backup_json", "gerar_backup"):
             if not self._tem_permissao(user, "relatorios", "read"):
                 return self._resposta_negada(user_nome, roles_str, "relatorios", "read", "fazer backup completo dos dados")
             return self._gerar_backup_json()
+
+        # Precificação e custos
+        if action == "calcular_precificacao":
+            if not self._tem_permissao(user, "financeiro", "read"):
+                return self._resposta_negada(user_nome, roles_str, "financeiro", "read", "calcular custos e precificação de produtos")
+            return self._executar_calcular_precificacao(params.get("produto") or "", float(params.get("margem_desejada") or 50.0), prompt_orig)
+
+        # Cálculos de estoque e capacidade produtiva
+        if action == "calcular_capacidade_producao":
+            if not self._tem_permissao(user, "estoque", "read"):
+                return self._resposta_negada(user_nome, roles_str, "estoque", "read", "consultar saldo e capacidade de produção")
+            return self._executar_calcular_capacidade_producao(params.get("produto") or "", prompt_orig)
+
+        if action == "calcular_necessidade_compras":
+            if not self._tem_permissao(user, "estoque", "read"):
+                return self._resposta_negada(user_nome, roles_str, "estoque", "read", "calcular lista de compras para pedidos")
+            return self._executar_calcular_necessidade_compras(params.get("status") or "pendentes", prompt_orig)
+
+        if action == "calcular_consumo_producao":
+            if not self._tem_permissao(user, "estoque", "read"):
+                return self._resposta_negada(user_nome, roles_str, "estoque", "read", "calcular consumo de materiais para produção")
+            return self._executar_calcular_consumo_producao(params.get("produto") or "", int(params.get("quantidade") or 1), prompt_orig)
+
+        # Consultoria técnica de artesanato e ateliê
+        if action == "consultoria_tecnica":
+            text_resp = raw_res.get("text_response") or params.get("text_response") or raw_res.get("reply")
+            if text_resp:
+                return {
+                    "success": True,
+                    "reply": text_resp,
+                    "voice_text": "Aqui estão as orientações técnicas para o ateliê.",
+                    "suggestions": ["🧵 Dicas de Costura", "📦 Consultar estoque", "🧾 Pedidos", "💰 Precificação"]
+                }
+
+        # Gestão de usuários / RBAC
+        if action == "consultar_usuarios":
+            if not self._tem_permissao(user, "usuarios", "read"):
+                return self._resposta_negada(user_nome, roles_str, "usuarios", "read", "visualizar usuários do sistema")
+            return self._consultar_usuarios()
+
+        # Sobras e retalhos adicionais
+        if action == "usar_sobra":
+            if not self._tem_permissao(user, "sobras", "update"):
+                return self._resposta_negada(user_nome, roles_str, "sobras", "update", "atualizar status de sobras")
+            return self._executar_acao_sobra_direto(params.get("descricao") or "", "Reaproveitado", prompt_orig)
+
+        if action == "descartar_sobra":
+            if not self._tem_permissao(user, "sobras", "update"):
+                return self._resposta_negada(user_nome, roles_str, "sobras", "update", "descartar sobras")
+            return self._executar_acao_sobra_direto(params.get("descricao") or "", "Descartado", prompt_orig)
 
         # Consultas
         if action == "consultar_estoque":
@@ -422,6 +479,7 @@ class AniaAssistant:
                 }
 
         return None
+
 
     # ── MÉTODOS PARAMETRIZADOS PARA EXECUÇÃO DIRETA ──────────────────────────
 
@@ -1033,7 +1091,311 @@ class AniaAssistant:
         voice = f"Despesa de {desp_alvo['descricao']} excluída."
         return {"success": True, "reply": msg, "voice_text": voice, "suggestions": ["Resumo financeiro"]}
 
+    def _executar_calcular_precificacao(self, prod_nome: str, margem_desejada: float, prompt_orig: str) -> dict:
+        produtos = self._carregar_produtos()
+        materiais = self._carregar_materiais()
+        mat_map = {str(m.get("id")): m for m in materiais if m.get("id")}
+        mat_map_name = {remover_acentos(m.get("nome", "")): m for m in materiais if m.get("nome")}
+
+        prod = None
+        p_clean = remover_acentos(prod_nome)
+        if p_clean:
+            for p in produtos:
+                if p_clean in remover_acentos(p.get("nome", "")):
+                    prod = p
+                    break
+        if not prod and produtos:
+            prod = produtos[0]
+
+        if not prod:
+            return {
+                "success": False,
+                "reply": "⚠️ Nenhum produto cadastrado encontrado no catálogo para cálculo de precificação.",
+                "voice_text": "Nenhum produto cadastrado encontrado.",
+                "suggestions": ["Cadastrar produto", "Ver produtos"]
+            }
+
+        receita = prod.get("receita") or []
+        if isinstance(receita, str):
+            try:
+                receita = json.loads(receita)
+            except Exception:
+                receita = []
+
+        custo_materiais = 0.0
+        linhas_detalhes = []
+        for item in receita:
+            m_id = str(item.get("material_id") or "")
+            m_nome = item.get("material_nome") or item.get("nome") or "Insumo"
+            qtd = float(item.get("quantidade") or item.get("qtd") or 0)
+            mat = mat_map.get(m_id) or mat_map_name.get(remover_acentos(m_nome))
+            preco_unit = float(mat.get("custo") or mat.get("preco_unitario") or 0) if mat else 0.0
+            custo_item = qtd * preco_unit
+            custo_materiais += custo_item
+            if qtd > 0:
+                linhas_detalhes.append(f"• {m_nome}: {qtd:g} un/m x {formatar_moeda(preco_unit)} = {formatar_moeda(custo_item)}")
+
+        preco_venda_atual = float(prod.get("preco_venda") or 0)
+        margem_fator = 1.0 + (margem_desejada / 100.0)
+        preco_sugerido = custo_materiais * margem_fator if custo_materiais > 0 else (preco_venda_atual if preco_venda_atual > 0 else 50.0)
+        lucro_unitario = (preco_venda_atual if preco_venda_atual > 0 else preco_sugerido) - custo_materiais
+
+        msg = (
+            f"💰 **Análise de Precificação e Custos: {prod.get('emoji', '👜')} {prod.get('nome')}**\n\n"
+            f"• **Custo Total de Matéria-Prima**: `{formatar_moeda(custo_materiais)}`\n"
+        )
+        if linhas_detalhes:
+            msg += "\n**Composição da Receita:**\n" + "\n".join(linhas_detalhes[:6]) + "\n\n"
+        msg += (
+            f"• **Preço de Venda Atual**: `{formatar_moeda(preco_venda_atual)}`\n"
+            f"• **Margem Desejada**: `{margem_desejada:.0f}%`\n"
+            f"• **Preço Sugerido com Margem**: `{formatar_moeda(preco_sugerido)}`\n"
+            f"• **Lucro Estimado por Peça**: `{formatar_moeda(lucro_unitario)}`"
+        )
+        return {
+            "success": True,
+            "reply": msg,
+            "voice_text": f"O custo de matéria-prima para {prod.get('nome')} é de {formatar_moeda(custo_materiais)} e o lucro estimado é de {formatar_moeda(lucro_unitario)}.",
+            "suggestions": ["📊 Ver Financeiro", "🧾 Pedidos", "📦 Ver Estoque"]
+        }
+
+    def _executar_calcular_capacidade_producao(self, prod_nome: str, prompt_orig: str) -> dict:
+        produtos = self._carregar_produtos()
+        materiais = self._carregar_materiais()
+        mat_map = {str(m.get("id")): m for m in materiais if m.get("id")}
+        mat_map_name = {remover_acentos(m.get("nome", "")): m for m in materiais if m.get("nome")}
+
+        prod = None
+        p_clean = remover_acentos(prod_nome)
+        if p_clean:
+            for p in produtos:
+                if p_clean in remover_acentos(p.get("nome", "")):
+                    prod = p
+                    break
+        if not prod and produtos:
+            prod = produtos[0]
+
+        if not prod:
+            return {
+                "success": False,
+                "reply": "⚠️ Nenhum produto cadastrado no catálogo para simular capacidade de produção.",
+                "voice_text": "Nenhum produto cadastrado encontrado.",
+                "suggestions": ["Cadastrar produto", "Ver estoque"]
+            }
+
+        receita = prod.get("receita") or []
+        if isinstance(receita, str):
+            try:
+                receita = json.loads(receita)
+            except Exception:
+                receita = []
+
+        if not receita:
+            return {
+                "success": True,
+                "reply": f"⚠️ O produto **{prod.get('nome')}** ainda não possui uma receita de materiais vinculada. Acesse a edição do produto para adicionar a ficha técnica!",
+                "voice_text": f"O produto {prod.get('nome')} não possui receita cadastrada.",
+                "suggestions": [f"Editar {prod.get('nome')}", "Ver produtos"]
+            }
+
+        capacidade_maxima = None
+        gargalo = None
+        linhas_analise = []
+
+        for item in receita:
+            m_id = str(item.get("material_id") or "")
+            m_nome = item.get("material_nome") or item.get("nome") or "Material"
+            qtd_nec = float(item.get("quantidade") or item.get("qtd") or 0)
+            if qtd_nec <= 0:
+                continue
+
+            mat = mat_map.get(m_id) or mat_map_name.get(remover_acentos(m_nome))
+            saldo_atual = float(mat.get("quantidade") or 0) if mat else 0.0
+            unidade = mat.get("unidade", "un") if mat else "un"
+
+            possivel = int(saldo_atual // qtd_nec)
+            if capacidade_maxima is None or possivel < capacidade_maxima:
+                capacidade_maxima = possivel
+                gargalo = m_nome
+
+            linhas_analise.append(f"• **{m_nome}**: Estoque `{saldo_atual:g} {unidade}` (Gasta `{qtd_nec:g} {unidade}/un`) → Dá para **{possivel}** peça(s)")
+
+        capacidade_final = capacidade_maxima if capacidade_maxima is not None else 0
+        emoji = prod.get("emoji", "👜")
+        nome_p = prod.get("nome", "Bolsa")
+
+        msg = (
+            f"🧮 **Simulação de Capacidade Produtiva**: {emoji} **{nome_p}**\n\n"
+            f"Com o saldo atual de matérias-primas no estoque, você consegue produzir no máximo **{capacidade_final} unidade(s)**.\n\n"
+        )
+        if gargalo and capacidade_final >= 0:
+            msg += f"⚠️ **Material Limitante (Gargalo)**: **{gargalo}**\n\n"
+        if linhas_analise:
+            msg += "**Detalhamento por Insumo:**\n" + "\n".join(linhas_analise) + "\n\n"
+        msg += f"💡 *Dica*: Reponha o insumo **{gargalo}** para aumentar a sua capacidade de produção!"
+
+        return {
+            "success": True,
+            "reply": msg,
+            "voice_text": f"Você consegue produzir no máximo {capacidade_final} unidades de {nome_p}. O material limitante é {gargalo}.",
+            "suggestions": ["📦 Consultar estoque", "💰 Precificação", "🧾 Criar pedido"]
+        }
+
+    def _executar_calcular_necessidade_compras(self, filtro: str, prompt_orig: str) -> dict:
+        pedidos = self._carregar_pedidos()
+        produtos = self._carregar_produtos()
+        materiais = self._carregar_materiais()
+
+        prod_map = {str(p.get("id")): p for p in produtos if p.get("id")}
+        prod_map_name = {remover_acentos(p.get("nome", "")): p for p in produtos if p.get("nome")}
+        mat_map = {str(m.get("id")): m for m in materiais if m.get("id")}
+        mat_map_name = {remover_acentos(m.get("nome", "")): m for m in materiais if m.get("nome")}
+
+        pedidos_alvo = [p for p in pedidos if (p.get("status") or "").lower() in ("pendente", "em produção", "em producao")]
+
+        if not pedidos_alvo:
+            return {
+                "success": True,
+                "reply": "🎉 **Tudo em dia!** Não há pedidos pendentes ou em produção no momento. Seu estoque atual atende a todas as encomendas!",
+                "voice_text": "Não há pedidos pendentes no momento.",
+                "suggestions": ["📦 Consultar estoque", "🧾 Novo pedido", "📊 Ver alertas"]
+            }
+
+        demanda_materiais = {}
+        for ped in pedidos_alvo:
+            p_id = str(ped.get("produto_id") or "")
+            p_nome = ped.get("produto_nome") or ""
+            qtd_ped = int(ped.get("quantidade") or 1)
+            prod = prod_map.get(p_id) or prod_map_name.get(remover_acentos(p_nome))
+            if not prod:
+                continue
+
+            receita = prod.get("receita") or []
+            if isinstance(receita, str):
+                try: receita = json.loads(receita)
+                except Exception: receita = []
+
+            for item in receita:
+                m_id = str(item.get("material_id") or "")
+                m_nome = item.get("material_nome") or item.get("nome") or "Material"
+                qtd_unit = float(item.get("quantidade") or item.get("qtd") or 0)
+                mat = mat_map.get(m_id) or mat_map_name.get(remover_acentos(m_nome))
+                custo_u = float(mat.get("custo") or mat.get("preco_unitario") or 0) if mat else 0.0
+                unidade = mat.get("unidade", "un") if mat else "un"
+
+                key = m_id if m_id else remover_acentos(m_nome)
+                if key not in demanda_materiais:
+                    demanda_materiais[key] = {
+                        "id": m_id,
+                        "nome": m_nome,
+                        "necessario": 0.0,
+                        "unidade": unidade,
+                        "custo_unit": custo_u,
+                        "saldo_atual": float(mat.get("quantidade") or 0) if mat else 0.0
+                    }
+                demanda_materiais[key]["necessario"] += (qtd_unit * qtd_ped)
+
+        faltas = []
+        custo_total_compras = 0.0
+
+        for key, info in demanda_materiais.items():
+            saldo = info["saldo_atual"]
+            nec = info["necessario"]
+            if saldo < nec:
+                falta_qtd = nec - saldo
+                custo_est = falta_qtd * info["custo_unit"]
+                custo_total_compras += custo_est
+                faltas.append(f"• 🛒 **{info['nome']}**: Falta `{falta_qtd:g} {info['unidade']}` (Estoque: {saldo:g} | Necessário: {nec:g}) — Est: `{formatar_moeda(custo_est)}`")
+
+        if not faltas:
+            return {
+                "success": True,
+                "reply": f"✅ **Estoque Suficiente!** O estoque atual possui todos os materiais necessários para concluir os **{len(pedidos_alvo)} pedidos ativos**.",
+                "voice_text": f"Seu estoque atual é suficiente para atender aos {len(pedidos_alvo)} pedidos ativos.",
+                "suggestions": ["📦 Consultar estoque", "🧾 Ver pedidos", "📊 Relatório em PDF"]
+            }
+
+        msg = (
+            f"📋 **Lista de Compras Inteligente ({len(pedidos_alvo)} Pedidos Ativos)**:\n\n"
+            f"Para finalizar as encomendas pendentes sem interrupção na produção, você precisa comprar:\n\n"
+            + "\n".join(faltas) + "\n\n"
+            f"💰 **Investimento Estimado em Compras**: `{formatar_moeda(custo_total_compras)}`"
+        )
+        return {
+            "success": True,
+            "reply": msg,
+            "voice_text": f"Você precisa comprar {len(faltas)} insumos para concluir os pedidos. Custo estimado de {formatar_moeda(custo_total_compras)}.",
+            "suggestions": ["➕ Dar entrada", "📦 Consultar estoque", "🧾 Ver pedidos"]
+        }
+
+    def _executar_calcular_consumo_producao(self, prod_nome: str, qtd_planejada: int, prompt_orig: str) -> dict:
+        produtos = self._carregar_produtos()
+        materiais = self._carregar_materiais()
+        mat_map = {str(m.get("id")): m for m in materiais if m.get("id")}
+        mat_map_name = {remover_acentos(m.get("nome", "")): m for m in materiais if m.get("nome")}
+
+        prod = None
+        p_clean = remover_acentos(prod_nome)
+        if p_clean:
+            for p in produtos:
+                if p_clean in remover_acentos(p.get("nome", "")):
+                    prod = p
+                    break
+        if not prod and produtos:
+            prod = produtos[0]
+
+        if not prod:
+            return {
+                "success": False,
+                "reply": "⚠️ Produto não encontrado para cálculo de consumo.",
+                "voice_text": "Produto não encontrado.",
+                "suggestions": ["Ver produtos", "Consultar estoque"]
+            }
+
+        receita = prod.get("receita") or []
+        if isinstance(receita, str):
+            try: receita = json.loads(receita)
+            except Exception: receita = []
+
+        if not receita:
+            return {
+                "success": True,
+                "reply": f"⚠️ O produto **{prod.get('nome')}** não possui receita cadastrada.",
+                "voice_text": f"O produto {prod.get('nome')} não possui receita cadastrada.",
+                "suggestions": [f"Editar {prod.get('nome')}", "Ver produtos"]
+            }
+
+        linhas = []
+        custo_total = 0.0
+        for item in receita:
+            m_id = str(item.get("material_id") or "")
+            m_nome = item.get("material_nome") or item.get("nome") or "Material"
+            qtd_u = float(item.get("quantidade") or item.get("qtd") or 0)
+            mat = mat_map.get(m_id) or mat_map_name.get(remover_acentos(m_nome))
+            unidade = mat.get("unidade", "un") if mat else "un"
+            saldo = float(mat.get("quantidade") or 0) if mat else 0.0
+            custo_u = float(mat.get("custo") or mat.get("preco_unitario") or 0) if mat else 0.0
+
+            consumo = qtd_u * qtd_planejada
+            custo_item = consumo * custo_u
+            custo_total += custo_item
+            status_estoque = "✅ Suficiente" if saldo >= consumo else f"⚠️ Falta {consumo - saldo:g} {unidade}"
+            linhas.append(f"• **{m_nome}**: `{consumo:g} {unidade}` ({status_estoque}) — Custo: `{formatar_moeda(custo_item)}`")
+
+        msg = (
+            f"📐 **Cálculo de Consumo para {qtd_planejada}x {prod.get('emoji', '👜')} {prod.get('nome')}**:\n\n"
+            + "\n".join(linhas) + "\n\n"
+            f"💰 **Custo Total Previsto de Materiais**: `{formatar_moeda(custo_total)}`"
+        )
+        return {
+            "success": True,
+            "reply": msg,
+            "voice_text": f"Para produzir {qtd_planejada} peças de {prod.get('nome')}, o custo previsto de matéria-prima é de {formatar_moeda(custo_total)}.",
+            "suggestions": ["📦 Consultar estoque", "💰 Precificação", "🧾 Criar pedido"]
+        }
+
     # ── 3. MOTOR DETERMINÍSTICO BASEADO EM REGRAS (CONTINGÊNCIA) ─────────────
+
 
     def _processar_com_regras(self, prompt_orig: str, user: dict) -> dict:
         p_clean = remover_acentos(prompt_orig)
@@ -1232,6 +1594,39 @@ class AniaAssistant:
                 return self._resposta_negada(user_nome, roles_str, "estoque", "read", "consultar materiais e quantidades em estoque")
             return self._consultar_estoque(p_clean, prompt_orig)
 
+        # ── 12. CONSULTA AO ORQUESTRADOR MULTI-AGENTE (INTELIGÊNCIA ESPECIALISTA) ──
+        if hasattr(self, "orchestrator") and self.orchestrator:
+            materiais = self._carregar_materiais()
+            produtos = self._carregar_produtos()
+            system_ctx = {
+                "user_name": user_nome,
+                "roles_str": roles_str,
+                "materiais": [{"id": m.get("id"), "nome": m.get("nome"), "gtin": m.get("gtin")} for m in materiais],
+                "produtos": [{"id": p.get("id"), "nome": p.get("nome"), "gtin": p.get("gtin"), "preco_venda": p.get("preco_venda")} for p in produtos],
+                "materiais_nomes": [m.get("nome") for m in materiais if m.get("nome")],
+                "produtos_nomes": [p.get("nome") for p in produtos if p.get("nome")],
+            }
+            try:
+                agent_res = self.orchestrator.route_and_process(prompt_orig, system_ctx, user)
+                if agent_res and agent_res.handled:
+                    if agent_res.action:
+                        despacho = self._despachar_acao_ollama(agent_res.action, agent_res.params, prompt_orig, user, agent_res.to_dict())
+                        if despacho:
+                            despacho["engine"] = "multi_agent_local"
+                            despacho["agent"] = agent_res.agent_name
+                            return despacho
+                    elif agent_res.text_response:
+                        return {
+                            "success": True,
+                            "reply": agent_res.text_response,
+                            "voice_text": agent_res.text_response.splitlines()[0] if agent_res.text_response else "Aqui está a resposta do especialista.",
+                            "suggestions": ["📦 Consultar estoque", "🧾 Pedidos", "💰 Finanças", "🧵 Dicas de Costura"],
+                            "engine": "multi_agent_local",
+                            "agent": agent_res.agent_name
+                        }
+            except Exception:
+                pass
+
         # ── FALLBACK ──────────────────────────────────────────────────────────
         return {
             "reply": f"Entendi sua mensagem, **{user_nome}**. O que exatamente você gostaria que eu faça?",
@@ -1251,9 +1646,28 @@ class AniaAssistant:
 
     def _tem_permissao(self, user: dict, recurso: str, acao: str) -> bool:
         roles = self._get_roles(user)
-        if "Admin" in roles:
+        if "Admin" in roles or "Developer" in roles:
             return True
-        return self.app.user_has_permission(recurso, acao)
+        if not roles:
+            return False
+        col_map = {"create": "can_create", "read": "can_read", "update": "can_update", "delete": "can_delete"}
+        col = col_map.get(acao, "can_read")
+        if self._use_sqlite:
+            try:
+                self._init_db()
+                conn = sqlite3.connect(self._db_path)
+                cur = conn.cursor()
+                for role in roles:
+                    cur.execute(f"SELECT {col} FROM role_permissions WHERE role = ? AND resource = ?", (role, recurso))
+                    row = cur.fetchone()
+                    if row and row[0]:
+                        conn.close()
+                        return True
+                conn.close()
+            except Exception:
+                pass
+            return False
+        return True
 
     def _resposta_negada(self, user_nome: str, roles_str: str, recurso: str, acao: str, acao_desc: str) -> dict:
         nome_amigavel = {
