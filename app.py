@@ -6321,6 +6321,17 @@ def developer_dashboard():
         except Exception as ex:
             db_stats["error"] = str(ex)
 
+    # Database Config
+    db_config = {
+        "engine": "postgres" if is_postgres_active() else "sqlite",
+        "host": os.environ.get("PGHOST", "172.16.36.14"),
+        "port": os.environ.get("PGPORT", "5432"),
+        "dbname": os.environ.get("PGDATABASE", "postgres"),
+        "user": os.environ.get("PGUSER", "root"),
+        "password": os.environ.get("PGPASSWORD", ""),
+        "fallback": os.environ.get("DB_FALLBACK_SQLITE", "1") in ("1", "true", "yes", "True"),
+    }
+
     # Runtime Diagnostics
     import platform
     diagnostics = {
@@ -6345,6 +6356,7 @@ def developer_dashboard():
         ollama_info=ollama_info,
         available_models=available_models,
         db_stats=db_stats,
+        db_config=db_config,
         audits=audits_list,
         diagnostics=diagnostics,
     )
@@ -6569,6 +6581,100 @@ def developer_db_restaurar():
         flash(f"Erro ao restaurar banco de dados: {e}")
 
     return redirect(url_for("developer_dashboard", tab="database"))
+
+
+@app.route("/developer/db/configurar", methods=["POST"])
+@requires_developer
+def developer_db_configurar():
+    engine = request.form.get("engine", "postgres").strip().lower()
+    host = request.form.get("host", "").strip()
+    port = request.form.get("port", "5432").strip()
+    dbname = request.form.get("dbname", "postgres").strip()
+    user = request.form.get("user", "postgres").strip()
+    password = request.form.get("password", "").strip()
+    fallback = (request.form.get("fallback") == "1")
+
+    import db
+    db.salvar_postgres_config(
+        host=host,
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
+        engine=engine,
+        fallback=fallback
+    )
+
+    try:
+        db.init_db()
+        init_db(force=True)
+    except Exception as ex:
+        sys.stderr.write(f"[INIT_DB ERRO] {ex}\n")
+
+    if USE_SQLITE:
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO audits (id, actor_id, actor_username, target_user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid.uuid4()),
+                    session.get("user_id"),
+                    g.user.get("username") if g.get("user") else "Developer",
+                    None,
+                    "configurar_banco",
+                    f"engine={engine};host={host};port={port};dbname={dbname};user={user};fallback={fallback}",
+                    agora().isoformat()
+                )
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    if engine == "postgres":
+        flash("Configurações do banco salvas com sucesso! Motor ativo: PostgreSQL.")
+    else:
+        flash("Configurações do banco salvas com sucesso! Motor ativo: SQLite Local.")
+
+    return redirect(url_for("developer_dashboard", tab="database"))
+
+
+@app.route("/developer/db/testar-conexao", methods=["POST"])
+@requires_developer
+def developer_db_testar_conexao():
+    data = request.get_json(silent=True) or request.form.to_dict() or {}
+    engine = data.get("engine", "postgres").strip().lower()
+
+    if engine == "sqlite":
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=5.0)
+            cur = conn.cursor()
+            cur.execute("SELECT 1;")
+            cur.fetchone()
+            conn.close()
+            return jsonify({
+                "success": True,
+                "message": f"Conexão com SQLite local (arquivo {os.path.basename(DB_PATH)}) bem-sucedida!"
+            })
+        except Exception as ex:
+            return jsonify({
+                "success": False,
+                "message": f"Falha na conexão com SQLite local: {str(ex)}"
+            })
+
+    host = data.get("host", "").strip()
+    port = data.get("port", "5432").strip()
+    dbname = data.get("dbname", "postgres").strip()
+    user = data.get("user", "postgres").strip()
+    password = data.get("password", "").strip()
+
+    import db
+    ok, msg = db.test_postgres_credentials(host, port, dbname, user, password)
+    return jsonify({
+        "success": ok,
+        "message": msg
+    })
 
 
 @app.route("/developer/seguranca/invalidar-sessoes", methods=["POST"])

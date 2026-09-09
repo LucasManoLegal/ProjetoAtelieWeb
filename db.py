@@ -97,6 +97,103 @@ def is_postgres_active() -> bool:
     return cfg is not None
 
 
+def salvar_postgres_config(
+    host: str,
+    port: str,
+    dbname: str,
+    user: str,
+    password: str,
+    engine: str = "postgres",
+    fallback: bool = True
+) -> bool:
+    """Atualiza o arquivo .env e o ambiente em tempo de execução com as novas credenciais de banco."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    lines = []
+    keys_written = set()
+
+    novos_valores = {
+        "PGHOST": str(host or "").strip(),
+        "PGPORT": str(port or "5432").strip(),
+        "PGDATABASE": str(dbname or "postgres").strip(),
+        "PGUSER": str(user or "postgres").strip(),
+        "PGPASSWORD": str(password or "").strip(),
+        "PGSSLMODE": "prefer",
+        "DB_ENGINE": str(engine or "postgres").strip().lower(),
+        "DB_FALLBACK_SQLITE": "1" if fallback else "0",
+    }
+
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#") or "=" not in stripped:
+                        lines.append(line)
+                        continue
+                    k, _ = stripped.split("=", 1)
+                    k = k.strip()
+                    if k in novos_valores:
+                        lines.append(f"{k}={novos_valores[k]}\n")
+                        keys_written.add(k)
+                    else:
+                        lines.append(line)
+        except Exception:
+            pass
+
+    for k, v in novos_valores.items():
+        if k not in keys_written:
+            lines.append(f"{k}={v}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except Exception as ex:
+        sys.stderr.write(f"[ERRO .ENV] Não foi possível gravar em {env_path}: {ex}\n")
+
+    # Atualiza variáveis em memória para resposta imediata
+    for k, v in novos_valores.items():
+        os.environ[k] = v
+
+    os.environ.pop("DATABASE_URL", None)
+    os.environ.pop("POSTGRES_URL", None)
+    os.environ.pop("POSTGRESQL_URL", None)
+
+    # Fecha pool existente para que o novo pool use as novas credenciais
+    close_pg_pool()
+    return True
+
+
+def test_postgres_credentials(
+    host: str,
+    port: str,
+    dbname: str,
+    user: str,
+    password: str,
+    timeout: float = 4.0
+) -> Tuple[bool, str]:
+    """Testa conectividade real com credenciais PostgreSQL candidatas sem persistir."""
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=str(host or "").strip(),
+            port=int(port or 5432),
+            dbname=str(dbname or "postgres").strip(),
+            user=str(user or "postgres").strip(),
+            password=str(password or "").strip(),
+            sslmode="prefer",
+            connect_timeout=int(timeout),
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT version();")
+        ver = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        short_ver = ver.split(",")[0] if "," in ver else ver[:35]
+        return True, f"Conexão com PostgreSQL bem-sucedida! ({short_ver})"
+    except Exception as ex:
+        return False, f"Falha na conexão com PostgreSQL: {str(ex)}"
+
+
 # ── Implementação de DbRow Compatível com sqlite3.Row ─────────────────────────
 
 class DbRow(tuple):

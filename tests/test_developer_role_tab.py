@@ -230,6 +230,73 @@ class TestDeveloperRoleTab(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn("desconectadas com sucesso", r.data.decode("utf-8"))
 
+    def test_11_developer_hub_database_config_and_test_connection(self):
+        """Testa o painel de configuração e alternância de banco de dados do Developer Hub."""
+        # 1. Não-developer (Admin comum) é barrado
+        self._login("admin-user-id")
+        r_admin_cfg = self.client.post("/developer/db/configurar", data={"engine": "sqlite"})
+        self.assertEqual(r_admin_cfg.status_code, 302)
+
+        r_admin_test = self.client.post("/developer/db/testar-conexao", json={"engine": "sqlite"})
+        self.assertEqual(r_admin_test.status_code, 302)
+
+        # 2. Developer tem acesso total
+        self._login("dev-user-id")
+
+        # GET /developer?tab=database exibe o formulário de configuração e os campos
+        r_page = self.client.get("/developer?tab=database")
+        self.assertEqual(r_page.status_code, 200)
+        page_html = r_page.data.decode("utf-8")
+        self.assertIn("Alternância & Configuração do Banco de Dados", page_html)
+        self.assertIn("btn_testar_db", page_html)
+        self.assertIn("form_db_config", page_html)
+
+        # 3. Testar conexão SQLite local via AJAX
+        r_test_sqlite = self.client.post("/developer/db/testar-conexao", json={"engine": "sqlite"})
+        self.assertEqual(r_test_sqlite.status_code, 200)
+        data_sqlite = r_test_sqlite.get_json()
+        self.assertTrue(data_sqlite.get("success"))
+        self.assertIn("SQLite local", data_sqlite.get("message"))
+
+        # 4. Testar conexão com credencial inválida de PostgreSQL
+        r_test_pg_fail = self.client.post("/developer/db/testar-conexao", json={
+            "engine": "postgres",
+            "host": "127.0.0.1",
+            "port": "54999",
+            "dbname": "fake_db",
+            "user": "fake_user",
+            "password": "wrong"
+        })
+        self.assertEqual(r_test_pg_fail.status_code, 200)
+        data_pg_fail = r_test_pg_fail.get_json()
+        self.assertFalse(data_pg_fail.get("success"))
+        self.assertIn("Falha na conexão", data_pg_fail.get("message"))
+
+        # 5. Salvar configuração de banco de dados
+        r_save = self.client.post("/developer/db/configurar", data={
+            "engine": "sqlite",
+            "host": "172.16.36.14",
+            "port": "5432",
+            "dbname": "postgres",
+            "user": "root",
+            "password": "",
+            "fallback": "1"
+        }, follow_redirects=True)
+        self.assertEqual(r_save.status_code, 200)
+        save_html = r_save.data.decode("utf-8")
+        self.assertIn("Configurações do banco salvas com sucesso", save_html)
+
+        # 6. Verifica log de auditoria
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        cur.execute("SELECT action, details FROM audits WHERE action='configurar_banco' ORDER BY created_at DESC LIMIT 1")
+        audit_row = cur.fetchone()
+        conn.close()
+        self.assertIsNotNone(audit_row)
+        self.assertEqual(audit_row[0], "configurar_banco")
+        self.assertIn("engine=sqlite", audit_row[1])
+
 
 if __name__ == "__main__":
     unittest.main()
+

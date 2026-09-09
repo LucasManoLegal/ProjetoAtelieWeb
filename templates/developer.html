@@ -279,6 +279,122 @@
      ABA 3: BANCO DE DADOS & BACKUPS
 ══════════════════════════════════════════════════════════════════════════════ -->
 <div id="tabpanel_database" class="devtab-panel" style="display: {{ 'block' if aba_ativa == 'database' else 'none' }};">
+
+  <!-- ⚙️ Configuração & Alternância de Banco de Dados -->
+  <div class="card" style="padding: 24px; margin-bottom: 24px; border-top: 4px solid var(--primary); border-radius: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.04);">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; flex-wrap: wrap; gap: 10px;">
+      <div>
+        <h3 class="font-serif" style="margin: 0; font-size: 20px; color: var(--primary); font-weight: 800;">
+          ⚙️ Alternância & Configuração do Banco de Dados
+        </h3>
+        <p class="font-crimson" style="margin: 4px 0 0 0; font-size: 14px; color: var(--muted);">
+          Alterne em tempo real entre o PostgreSQL de produção no servidor e o SQLite local offline.
+        </p>
+      </div>
+      <span class="badge" id="badge_motor_atual" style="background: {% if db_config.engine == 'postgres' %}rgba(37, 99, 235, 0.12); color: #1d4ed8;{% else %}rgba(16, 185, 129, 0.12); color: #047857;{% endif %} font-weight: 700; padding: 6px 14px; border-radius: 20px; font-size: 13.5px;">
+        Motor Ativo: {% if db_config.engine == 'postgres' %}🐘 PostgreSQL{% else %}🗄️ SQLite Local{% endif %}
+      </span>
+    </div>
+
+    <form method="post" action="{{ url_for('developer_db_configurar') }}" id="form_db_config">
+      <!-- Seletor de Motor -->
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; font-weight: 700; font-size: 13.5px; margin-bottom: 8px; color: var(--text);">
+          Selecione o Motor de Armazenamento:
+        </label>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px;">
+          <label style="border: 2px solid {% if db_config.engine == 'postgres' %}var(--primary){% else %}var(--border){% endif %}; border-radius: 10px; padding: 14px 16px; cursor: pointer; display: flex; align-items: center; gap: 12px; background: {% if db_config.engine == 'postgres' %}rgba(159, 27, 44, 0.04){% else %}var(--card-bg){% endif %}; transition: all 0.2s ease;" id="label_engine_postgres">
+            <input type="radio" name="engine" value="postgres" id="engine_postgres" {% if db_config.engine == 'postgres' %}checked{% endif %} onchange="onEngineChange()" style="transform: scale(1.2);">
+            <div>
+              <div style="font-weight: 700; font-size: 15px; color: var(--primary);">🐘 PostgreSQL (Servidor)</div>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">Banco de dados relacional multiusuário no servidor de produção.</div>
+            </div>
+          </label>
+
+          <label style="border: 2px solid {% if db_config.engine == 'sqlite' %}var(--primary){% else %}var(--border){% endif %}; border-radius: 10px; padding: 14px 16px; cursor: pointer; display: flex; align-items: center; gap: 12px; background: {% if db_config.engine == 'sqlite' %}rgba(159, 27, 44, 0.04){% else %}var(--card-bg){% endif %}; transition: all 0.2s ease;" id="label_engine_sqlite">
+            <input type="radio" name="engine" value="sqlite" id="engine_sqlite" {% if db_config.engine == 'sqlite' %}checked{% endif %} onchange="onEngineChange()" style="transform: scale(1.2);">
+            <div>
+              <div style="font-weight: 700; font-size: 15px; color: var(--primary);">🗄️ SQLite Local (Arquivo)</div>
+              <div style="font-size: 12px; color: var(--muted); margin-top: 2px;">Armazenamento local isolado em <code>data/data.db</code> com WAL rápido.</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Credenciais PostgreSQL -->
+      <div id="pg_config_fields" style="display: {% if db_config.engine == 'postgres' %}block{% else %}none{% endif %}; background: rgba(0,0,0,0.015); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin-bottom: 20px;">
+        <h4 class="font-serif" style="margin: 0 0 14px 0; font-size: 16px; color: var(--primary); font-weight: 700;">
+          🔑 Parâmetros de Conexão PostgreSQL
+        </h4>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 14px;">
+          <div>
+            <label for="db_host" style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px;">
+              Host / Endereço IP <span style="color: var(--danger);">*</span>
+            </label>
+            <input type="text" name="host" id="db_host" value="{{ db_config.host }}" placeholder="ex: 172.16.36.14 ou localhost" class="input-vintage" style="width: 100%;">
+          </div>
+
+          <div>
+            <label for="db_port" style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px;">
+              Porta TCP <span style="color: var(--danger);">*</span>
+            </label>
+            <input type="number" name="port" id="db_port" value="{{ db_config.port }}" placeholder="5432" class="input-vintage" style="width: 100%;">
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 14px;">
+          <div>
+            <label for="db_dbname" style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px;">
+              Nome da Database <span style="color: var(--danger);">*</span>
+            </label>
+            <input type="text" name="dbname" id="db_dbname" value="{{ db_config.dbname }}" placeholder="postgres" class="input-vintage" style="width: 100%;">
+          </div>
+
+          <div>
+            <label for="db_user" style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px;">
+              Usuário do Banco <span style="color: var(--danger);">*</span>
+            </label>
+            <input type="text" name="user" id="db_user" value="{{ db_config.user }}" placeholder="root ou postgres" class="input-vintage" style="width: 100%;">
+          </div>
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <label for="db_password" style="display: block; font-weight: 600; font-size: 13px; margin-bottom: 6px;">
+            Senha de Acesso
+          </label>
+          <div style="display: flex; gap: 8px;">
+            <input type="password" name="password" id="db_password" value="{{ db_config.password }}" placeholder="••••••••" class="input-vintage" style="flex: 1;">
+            <button type="button" class="btn-secondary" onclick="togglePasswordVisibility('db_password')" style="padding: 0 14px; font-size: 15px;" title="Mostrar / Ocultar Senha">
+              👁️
+            </button>
+          </div>
+        </div>
+
+        <div style="margin-top: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;">
+            <input type="checkbox" name="fallback" value="1" id="db_fallback" {% if db_config.fallback %}checked{% endif %}>
+            <span><strong>Contingência Automática (Fallback SQLite):</strong> Se o servidor PostgreSQL remoto cair ou ficar inacessível, o sistema continua operando sem interrupções utilizando o SQLite local.</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Alerta de Resultado do Teste -->
+      <div id="test_db_result" style="display: none; padding: 12px 16px; border-radius: 8px; font-size: 13.5px; margin-bottom: 16px;"></div>
+
+      <!-- Barra de Ações -->
+      <div style="display: flex; gap: 12px; flex-wrap: wrap; justify-content: flex-end; align-items: center;">
+        <button type="button" id="btn_testar_db" onclick="testarConexaoDb()" class="btn-secondary" style="padding: 11px 20px; font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; gap: 8px;">
+          <span>🧪 Testar Conexão</span>
+        </button>
+
+        <button type="submit" class="btn-primary" style="padding: 11px 24px; font-size: 14px; font-weight: 700; display: inline-flex; align-items: center; gap: 8px;">
+          <span>💾 Salvar & Aplicar Configuração</span>
+        </button>
+      </div>
+    </form>
+  </div>
+
   <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 20px;">
     
     <!-- Status do Banco de Dados -->
@@ -570,6 +686,83 @@
       btn.disabled = false;
       btn.innerText = 'Enviar 🚀';
       out.innerHTML = '<span style="color: #f48771;">Erro ao executar: ' + err + '</span>';
+    });
+  }
+
+  function onEngineChange() {
+    const isPg = document.getElementById('engine_postgres').checked;
+    const pgFields = document.getElementById('pg_config_fields');
+    const labelPg = document.getElementById('label_engine_postgres');
+    const labelSqlite = document.getElementById('label_engine_sqlite');
+
+    if (pgFields) {
+      pgFields.style.display = isPg ? 'block' : 'none';
+    }
+    if (labelPg && labelSqlite) {
+      if (isPg) {
+        labelPg.style.borderColor = 'var(--primary)';
+        labelPg.style.background = 'rgba(159, 27, 44, 0.04)';
+        labelSqlite.style.borderColor = 'var(--border)';
+        labelSqlite.style.background = 'var(--card-bg)';
+      } else {
+        labelSqlite.style.borderColor = 'var(--primary)';
+        labelSqlite.style.background = 'rgba(159, 27, 44, 0.04)';
+        labelPg.style.borderColor = 'var(--border)';
+        labelPg.style.background = 'var(--card-bg)';
+      }
+    }
+  }
+
+  function testarConexaoDb() {
+    const btn = document.getElementById('btn_testar_db');
+    const resultBox = document.getElementById('test_db_result');
+    const isPg = document.getElementById('engine_postgres').checked;
+
+    const payload = {
+      engine: isPg ? 'postgres' : 'sqlite',
+      host: document.getElementById('db_host') ? document.getElementById('db_host').value.trim() : '',
+      port: document.getElementById('db_port') ? document.getElementById('db_port').value.trim() : '5432',
+      dbname: document.getElementById('db_dbname') ? document.getElementById('db_dbname').value.trim() : 'postgres',
+      user: document.getElementById('db_user') ? document.getElementById('db_user').value.trim() : 'postgres',
+      password: document.getElementById('db_password') ? document.getElementById('db_password').value : '',
+    };
+
+    btn.disabled = true;
+    btn.innerHTML = '<span>Testando Conexão... ⏳</span>';
+    resultBox.style.display = 'block';
+    resultBox.style.background = 'rgba(59, 130, 246, 0.1)';
+    resultBox.style.border = '1px solid rgba(59, 130, 246, 0.3)';
+    resultBox.style.color = '#1d4ed8';
+    resultBox.innerHTML = 'Conectando ao banco de dados para validação de credenciais...';
+
+    fetch('{{ url_for("developer_db_testar_conexao") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🧪 Testar Conexão</span>';
+      if (data.success) {
+        resultBox.style.background = 'rgba(16, 185, 129, 0.12)';
+        resultBox.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+        resultBox.style.color = '#047857';
+        resultBox.innerHTML = '<strong>✅ Conexão Estabelecida com Sucesso:</strong> ' + data.message;
+      } else {
+        resultBox.style.background = 'rgba(239, 68, 68, 0.12)';
+        resultBox.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        resultBox.style.color = '#b91c1c';
+        resultBox.innerHTML = '<strong>❌ Falha na Conexão:</strong> ' + data.message;
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🧪 Testar Conexão</span>';
+      resultBox.style.background = 'rgba(239, 68, 68, 0.12)';
+      resultBox.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+      resultBox.style.color = '#b91c1c';
+      resultBox.innerHTML = '<strong>❌ Erro de Comunicação:</strong> Não foi possível obter resposta do servidor (' + err + ').';
     });
   }
 </script>
