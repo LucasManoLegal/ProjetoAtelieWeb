@@ -23,6 +23,7 @@ class TestAniaOllamaIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         app.testing = True
+        os.environ["TESTING"] = "1"
 
     def setUp(self):
         init_db()

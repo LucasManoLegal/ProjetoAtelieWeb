@@ -148,11 +148,11 @@ class OllamaEngine:
         # 5. Qualquer outro disponível
         return available[0] if available else self.model
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self, force_refresh: bool = False) -> Dict[str, Any]:
         """
-        Retorna o status completo da integração com a IA Local.
+        Retorna o status completo da integração com a IA Local (usando cache TTL de 15s por padrão).
         """
-        online = self.is_online(force_refresh=True)
+        online = self.is_online(force_refresh=force_refresh)
         tipo = "ollama_daemon" if self._is_real_daemon else ("ia_local_emulada" if self.emulate_if_offline and online else "offline")
         return {
             "enabled": self.enabled,

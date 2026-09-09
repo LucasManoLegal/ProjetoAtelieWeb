@@ -18,7 +18,7 @@
       {{ relatorio.titulo }}
     </h2>
     <p class="font-crimson" style="margin:2px 0 0 0; font-size:15px; color:var(--muted); font-style:italic;">
-      Criado por <strong>{{ relatorio.criado_por or 'Sistema' }}</strong> · Atualizado em {{ relatorio.updated_at[:10] if relatorio.updated_at else '-' }}
+      Criado por <strong>{{ relatorio.criado_por or 'Sistema' }}</strong> · Atualizado em {{ (relatorio.updated_at|string)[:10] if relatorio.updated_at else '-' }}
     </p>
   </div>
 

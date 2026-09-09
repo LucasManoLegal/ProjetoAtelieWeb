@@ -123,10 +123,10 @@
         <!-- Linha de Próximo e Último Envio -->
         <div style="font-size:13.5px; color:var(--muted); display:flex; flex-wrap:wrap; gap:14px;">
           {% if ag.proximo_envio %}
-            <span>⏳ <strong>Próximo envio:</strong> {{ (ag.proximo_envio or '')[:16]|replace('T', ' ') }}</span>
+            <span>⏳ <strong>Próximo envio:</strong> {{ (ag.proximo_envio|string)[:16]|replace('T', ' ') }}</span>
           {% endif %}
           {% if ag.ultimo_envio %}
-            <span>🕒 <strong>Último envio:</strong> {{ (ag.ultimo_envio or '')[:16]|replace('T', ' ') }}</span>
+            <span>🕒 <strong>Último envio:</strong> {{ (ag.ultimo_envio|string)[:16]|replace('T', ' ') }}</span>
           {% else %}
             <span style="font-style:italic;">Nenhum envio realizado ainda</span>
           {% endif %}

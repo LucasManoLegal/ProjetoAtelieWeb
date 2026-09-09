@@ -435,7 +435,7 @@
           {% for a in audits %}
             <tr style="border-bottom: 1px solid var(--border);">
               <td style="padding: 8px 10px; color: var(--muted); white-space: nowrap;">
-                {{ a.created_at[:19]|replace('T', ' ') }}
+                {{ (a.created_at|string)[:19]|replace('T', ' ') }}
               </td>
               <td style="padding: 8px 10px; font-weight: 700; color: var(--text);">
                 {{ a.actor_username or 'Sistema' }}

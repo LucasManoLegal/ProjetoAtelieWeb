@@ -35,4 +35,4 @@ USER appuser
 # --preload: importa o app uma única vez no processo mestre antes de criar os
 # workers, evitando que rotinas de inicialização (ex: criação de usuário padrão)
 # rodem em paralelo em cada worker e causem condição de corrida no SQLite.
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "3", "--timeout", "120", "--preload", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--worker-class", "gthread", "--timeout", "120", "--preload", "app:app"]

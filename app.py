@@ -51,10 +51,16 @@ from db import get_db_connection, get_db_stats, test_db_connection, is_postgres_
 
 # Interceptor transparente de conexão de banco:
 _orig_sqlite3_connect = sqlite3.connect
+_in_smart_connect = False
 
 def smart_db_connect(path=DB_PATH, *args, **kwargs):
-    if path == DB_PATH:
-        return get_db_connection()
+    global _in_smart_connect
+    if path == DB_PATH and not _in_smart_connect:
+        try:
+            _in_smart_connect = True
+            return get_db_connection()
+        finally:
+            _in_smart_connect = False
     return _orig_sqlite3_connect(path, *args, **kwargs)
 
 sqlite3.connect = smart_db_connect
@@ -90,6 +96,23 @@ STATUS_SOBRA_BADGE = {
     "Descartado": "badge-low",
 }
 CATEGORIAS_DESPESA = ["Matéria-prima", "Aluguel", "Transporte", "Ferramentas", "Marketing", "Outros"]
+
+DEFAULT_PRODUTOS = [
+    {"nome": "Bolsa Tote Clássica", "emoji": "👜", "preco_venda": 180.0, "receita": [
+        {"material_nome": "Courino Preto", "quantidade": 1.5},
+        {"material_nome": "Zíper 30cm Preto", "quantidade": 1.0},
+        {"material_nome": "Linha de Costura Preta", "quantidade": 0.05},
+    ]},
+    {"nome": "Necessaire Compacta", "emoji": "👝", "preco_venda": 60.0, "receita": [
+        {"material_nome": "Courino Preto", "quantidade": 0.4},
+        {"material_nome": "Zíper 30cm Preto", "quantidade": 1.0},
+    ]},
+    {"nome": "Bolsa Transversal Pequena", "emoji": "👛", "preco_venda": 120.0, "receita": [
+        {"material_nome": "Courino Caramelo", "quantidade": 0.8},
+        {"material_nome": "Mosquetão Dourado", "quantidade": 2.0},
+        {"material_nome": "Fivela Quadrada Dourada", "quantidade": 1.0},
+    ]},
+]
 
 
 # ── Fuso horário (datas corretas no horário de Brasília) ─────────────────────
@@ -332,6 +355,46 @@ SYSTEM_TABS = [
 ]
 
 
+# ── Cache em Memória para Permissões RBAC (Zero Latência) ─────────────────────
+
+_ROLE_PERMS_CACHE = None
+_ROLE_PERMS_CACHE_LOCK = threading.Lock()
+
+
+def invalidate_role_permissions_cache():
+    """Invalida o cache em memória de permissões RBAC."""
+    global _ROLE_PERMS_CACHE
+    with _ROLE_PERMS_CACHE_LOCK:
+        _ROLE_PERMS_CACHE = None
+
+
+def get_cached_role_permissions():
+    """Retorna mapa consolidado de permissões por (role, resource) direto da memória RAM."""
+    global _ROLE_PERMS_CACHE
+    if _ROLE_PERMS_CACHE is not None:
+        return _ROLE_PERMS_CACHE
+    with _ROLE_PERMS_CACHE_LOCK:
+        if _ROLE_PERMS_CACHE is not None:
+            return _ROLE_PERMS_CACHE
+        cache = {}
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT role, resource, can_create, can_read, can_update, can_delete FROM role_permissions")
+            for r in cur.fetchall():
+                cache[(r[0], r[1])] = {
+                    "can_create": int(r[2] or 0),
+                    "can_read": int(r[3] or 0),
+                    "can_update": int(r[4] or 0),
+                    "can_delete": int(r[5] or 0),
+                }
+            conn.close()
+        except Exception:
+            pass
+        _ROLE_PERMS_CACHE = cache
+        return _ROLE_PERMS_CACHE
+
+
 # ── Helpers de Verificação de Permissões e Decoradores ───────────────────────
 
 def user_has_permission(resource, action):
@@ -357,19 +420,17 @@ def user_has_permission(resource, action):
     col = col_map.get(action, "can_read")
 
     if USE_SQLITE:
-        try:
-            init_db()
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            for role in roles:
-                cur.execute(f"SELECT {col} FROM role_permissions WHERE role=? AND resource=?", (role, resource))
-                row = cur.fetchone()
-                if row and row[0] == 1:
-                    conn.close()
-                    return True
-            conn.close()
-        except Exception:
-            return False
+        perms = get_cached_role_permissions()
+        known_roles = {k[0] for k in perms.keys()}
+        if any(r not in known_roles for r in roles):
+            invalidate_role_permissions_cache()
+            perms = get_cached_role_permissions()
+
+        for role in roles:
+            p = perms.get((role, resource))
+            if p and p.get(col) == 1:
+                return True
+        return False
     else:
         perms_list = carregar_json("role_permissions.json", seed=[])
         for role in roles:
@@ -460,11 +521,25 @@ def inject_permissions():
 
 
 
-def init_db():
+_db_initialized = False
+
+def init_db(force=False):
     """Initialize SQLite database and tables used by the app when USE_SQLITE is enabled.
     Creates both a generic collections table (legacy) and proper normalized tables for
     materiais, produtos, pedidos, movimentacoes, sobras, despesas and usuarios.
     """
+    global _db_initialized
+    if _db_initialized and not force:
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(1) FROM roles WHERE is_system=1")
+            if cur.fetchone()[0] == 0:
+                seed_roles_se_necessario(conn)
+            conn.close()
+        except Exception:
+            pass
+        return
     os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=15.0)
     cur = conn.cursor()
@@ -616,41 +691,42 @@ def init_db():
         )
         """
     )
-    # Migrations for tables
-    for col, ctype in [
-        ('role', 'TEXT'),
-        ('session_version', 'INTEGER DEFAULT 0'),
-        ('nome', 'TEXT'),
-        ('avatar', 'TEXT'),
-        ('roles', 'TEXT'),
-        ('email', 'TEXT'),
-        ('google_id', 'TEXT'),
-        ('google_refresh_token', 'TEXT'),
-        ('google_access_token', 'TEXT'),
-        ('google_token_expiry', 'TEXT')
-    ]:
-        try:
-            cur.execute(f"ALTER TABLE usuarios ADD COLUMN {col} {ctype}")
-        except Exception:
-            pass
+    # Migrations for tables (apenas para bases legadas SQLite; no PostgreSQL o esquema nasce completo)
+    if not is_postgres_active():
+        for col, ctype in [
+            ('role', 'TEXT'),
+            ('session_version', 'INTEGER DEFAULT 0'),
+            ('nome', 'TEXT'),
+            ('avatar', 'TEXT'),
+            ('roles', 'TEXT'),
+            ('email', 'TEXT'),
+            ('google_id', 'TEXT'),
+            ('google_refresh_token', 'TEXT'),
+            ('google_access_token', 'TEXT'),
+            ('google_token_expiry', 'TEXT')
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE usuarios ADD COLUMN {col} {ctype}")
+            except Exception:
+                pass
 
-    for col, ctype in [('gtin', 'TEXT'), ('estoque_pronto', 'INTEGER DEFAULT 0')]:
-        try:
-            cur.execute(f"ALTER TABLE produtos ADD COLUMN {col} {ctype}")
-        except Exception:
-            pass
+        for col, ctype in [('gtin', 'TEXT'), ('estoque_pronto', 'INTEGER DEFAULT 0')]:
+            try:
+                cur.execute(f"ALTER TABLE produtos ADD COLUMN {col} {ctype}")
+            except Exception:
+                pass
 
-    for col, ctype in [('usou_estoque_pronto', 'INTEGER DEFAULT 0')]:
-        try:
-            cur.execute(f"ALTER TABLE pedidos ADD COLUMN {col} {ctype}")
-        except Exception:
-            pass
+        for col, ctype in [('usou_estoque_pronto', 'INTEGER DEFAULT 0')]:
+            try:
+                cur.execute(f"ALTER TABLE pedidos ADD COLUMN {col} {ctype}")
+            except Exception:
+                pass
 
-    for col, ctype in [('usuario_remetente_id', 'TEXT')]:
-        try:
-            cur.execute(f"ALTER TABLE agendamentos_email ADD COLUMN {col} {ctype}")
-        except Exception:
-            pass
+        for col, ctype in [('usuario_remetente_id', 'TEXT')]:
+            try:
+                cur.execute(f"ALTER TABLE agendamentos_email ADD COLUMN {col} {ctype}")
+            except Exception:
+                pass
 
     # roles table: defines roles and descriptions
     cur.execute(
@@ -839,12 +915,35 @@ def init_db():
                 except Exception:
                     pass
 
+            # Se a tabela de produtos ficou vazia, carrega produtos padrão do sistema
+            try:
+                cur.execute("SELECT COUNT(1) FROM produtos")
+                if cur.fetchone()[0] == 0:
+                    cur.execute("SELECT id, nome FROM materiais")
+                    mat_map = {r[1].lower(): r[0] for r in cur.fetchall()}
+                    for p in DEFAULT_PRODUTOS:
+                        receita = []
+                        for item in p.get("receita", []):
+                            mat_id = mat_map.get((item.get("material_nome") or "").lower())
+                            if mat_id:
+                                receita.append({"material_id": mat_id, "quantidade": float(item.get("quantidade") or 0)})
+                        if not receita:
+                            continue
+                        cur.execute(
+                            "INSERT OR IGNORE INTO produtos (id, nome, emoji, preco_venda, receita, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (str(uuid.uuid4()), p["nome"], p["emoji"], float(p["preco_venda"] or 0), json.dumps(receita, ensure_ascii=False), now, now),
+                        )
+            except Exception:
+                pass
+
             cur.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seed_padrao_v5_aplicado', '1')")
             conn.commit()
     except Exception:
         pass
 
+    invalidate_role_permissions_cache()
     conn.close()
+    _db_initialized = True
 
 
 
@@ -1362,6 +1461,7 @@ def seed_roles_se_necessario(conn=None):
                 (name, res, c, r, u, d, now),
             )
     conn.commit()
+    invalidate_role_permissions_cache()
 
     if close_at_end:
         conn.close()
@@ -1582,7 +1682,6 @@ def require_login():
         # try to find user by id
         user = None
         if USE_SQLITE:
-            init_db()
             conn = sqlite3.connect(DB_PATH)
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
@@ -1622,6 +1721,18 @@ def require_login():
         return jsonify({"error": "unauthorized", "denied": True, "reply": "🔒 Sessão Necessária: Por favor, faça login para continuar.", "voice_text": "Por favor, faça login para utilizar a assistente."}), 401
 
     return redirect(url_for("login", next=request.path))
+
+
+@app.after_request
+def add_browser_cache_headers(response):
+    """Adiciona cabeçalhos de cache para assets estáticos e uploads, acelerando navegação."""
+    if response.status_code in (200, 304):
+        path = request.path
+        if path.startswith("/static/"):
+            response.headers["Cache-Control"] = "public, max-age=604800, immutable"
+        elif path.startswith("/uploads/"):
+            response.headers["Cache-Control"] = "public, max-age=86400"
+    return response
 
 
 @app.route("/login", methods=["GET", "POST"])
@@ -2315,6 +2426,7 @@ def roles_novo():
                             (name, t_id, can_create, can_read, can_update, can_delete, now),
                         )
                 conn.commit()
+                invalidate_role_permissions_cache()
                 try:
                     cur.execute(
                         "INSERT INTO audits (id, actor_id, actor_username, target_user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -2412,6 +2524,7 @@ def roles_editar(role):
 
                 cur.execute("UPDATE usuarios SET session_version=COALESCE(session_version,0)+1 WHERE role=?", (target_role,))
                 conn.commit()
+                invalidate_role_permissions_cache()
 
                 try:
                     cur.execute(
@@ -2451,6 +2564,7 @@ def roles_excluir(role):
             cur.execute("DELETE FROM role_permissions WHERE role=?", (role,))
             cur.execute("DELETE FROM roles WHERE name=?", (role,))
             conn.commit()
+            invalidate_role_permissions_cache()
             try:
                 cur.execute(
                     "INSERT INTO audits (id, actor_id, actor_username, target_user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -2512,6 +2626,7 @@ def roles_assign():
                         except Exception:
                             pass
                 conn.commit()
+                invalidate_role_permissions_cache()
                 if changed:
                     flash("Atribuições de papéis atualizadas com sucesso.")
                 else:
@@ -2531,62 +2646,24 @@ def roles_assign():
 def carregar_materiais():
     # When using SQLite, read from the proper 'materiais' table with a transaction.
     if USE_SQLITE:
-        init_db()
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(1) as cnt FROM materiais")
-        cnt = cur.fetchone()[0]
-        if cnt == 0 and os.path.exists(SEED_FILE):
-            # seed the table from the JSON seed file
-            try:
-                with open(SEED_FILE, encoding="utf-8") as f:
-                    seed = json.load(f)
-            except Exception:
-                seed = []
-            if seed:
-                now = agora().isoformat()
-                to_insert = []
-                for m in seed:
-                    _id = m.get("id") or str(uuid.uuid4())
-                    to_insert.append((
-                        _id,
-                        m.get("nome"),
-                        m.get("categoria"),
-                        m.get("emoji"),
-                        float(m.get("quantidade") or 0),
-                        m.get("unidade"),
-                        float(m.get("quantidade_minima") or 0),
-                        float(m.get("custo") or 0),
-                        m.get("gtin"),
-                        m.get("foto"),
-                        now,
-                        now,
-                    ))
-                cur.executemany(
-                    "INSERT OR IGNORE INTO materiais (id,nome,categoria,emoji,quantidade,unidade,quantidade_minima,custo,gtin,foto,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                    to_insert,
-                )
-                conn.commit()
         cur.execute("SELECT * FROM materiais ORDER BY nome COLLATE NOCASE")
         rows = cur.fetchall()
         conn.close()
-        # convert rows to dicts matching previous JSON structure
-        result = []
-        for r in rows:
-            result.append({
-                "id": r["id"],
-                "nome": r["nome"],
-                "categoria": r["categoria"],
-                "emoji": r["emoji"],
-                "quantidade": r["quantidade"],
-                "unidade": r["unidade"],
-                "quantidade_minima": r["quantidade_minima"],
-                "custo": r["custo"],
-                "gtin": r["gtin"],
-                "foto": r["foto"],
-            })
-        return result
+        return [{
+            "id": r["id"],
+            "nome": r["nome"],
+            "categoria": r["categoria"],
+            "emoji": r["emoji"],
+            "quantidade": r["quantidade"],
+            "unidade": r["unidade"],
+            "quantidade_minima": r["quantidade_minima"],
+            "custo": r["custo"],
+            "gtin": r["gtin"],
+            "foto": r["foto"],
+        } for r in rows]
 
     if not os.path.exists(DATA_FILE):
         os.makedirs(DATA_DIR, exist_ok=True)
@@ -2916,52 +2993,12 @@ def baixa():
 
 
 # ── Produtos & Receitas ───────────────────────────────────────────────────────
-DEFAULT_PRODUTOS = [
-    {"nome": "Bolsa Tote Clássica", "emoji": "👜", "preco_venda": 180.0, "receita": [
-        {"material_nome": "Courino Preto", "quantidade": 1.5},
-        {"material_nome": "Zíper 30cm Preto", "quantidade": 1.0},
-        {"material_nome": "Linha de Costura Preta", "quantidade": 0.05},
-    ]},
-    {"nome": "Necessaire Compacta", "emoji": "👝", "preco_venda": 60.0, "receita": [
-        {"material_nome": "Courino Preto", "quantidade": 0.4},
-        {"material_nome": "Zíper 30cm Preto", "quantidade": 1.0},
-    ]},
-    {"nome": "Bolsa Transversal Pequena", "emoji": "👛", "preco_venda": 120.0, "receita": [
-        {"material_nome": "Courino Caramelo", "quantidade": 0.8},
-        {"material_nome": "Mosquetão Dourado", "quantidade": 2.0},
-        {"material_nome": "Fivela Quadrada Dourada", "quantidade": 1.0},
-    ]},
-]
-
 
 def carregar_produtos():
     if USE_SQLITE:
-        init_db()
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(1) as cnt FROM produtos")
-        cnt = cur.fetchone()[0]
-        if cnt == 0:
-            # Seed produtos padrão do sistema, resolvendo os materiais da receita por nome
-            try:
-                mat_map = {m["nome"].lower(): m for m in carregar_materiais()}
-            except Exception:
-                mat_map = {}
-            now = agora().isoformat()
-            for p in DEFAULT_PRODUTOS:
-                receita = []
-                for item in p.get("receita", []):
-                    m = mat_map.get((item.get("material_nome") or "").lower())
-                    if m:
-                        receita.append({"material_id": m["id"], "quantidade": float(item.get("quantidade") or 0)})
-                if not receita:
-                    continue
-                cur.execute(
-                    "INSERT OR IGNORE INTO produtos (id, nome, emoji, preco_venda, receita, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), p["nome"], p["emoji"], float(p["preco_venda"] or 0), json.dumps(receita, ensure_ascii=False), now, now),
-                )
-            conn.commit()
         cur.execute("SELECT * FROM produtos ORDER BY nome COLLATE NOCASE")
         rows = cur.fetchall()
         conn.close()
@@ -5266,7 +5303,7 @@ def gerar_xlsx_completo_bytes():
             val_tot,
             p.get("status", "Pendente"),
             p.get("data_pedido", "") or "-",
-            p.get("created_at", "")[:16] if p.get("created_at") else "-"
+            str(p.get("created_at") or "")[:16] if p.get("created_at") else "-"
         ]
         ws_ped.append(row)
         ws_ped.row_dimensions[r_idx].height = 20
@@ -5303,7 +5340,7 @@ def gerar_xlsx_completo_bytes():
             d.get("categoria", "Outros"),
             float(d.get("valor", 0)),
             d.get("data", ""),
-            d.get("created_at", "")[:16] if d.get("created_at") else "-"
+            str(d.get("created_at") or "")[:16] if d.get("created_at") else "-"
         ]
         ws_desp.append(row)
         ws_desp.row_dimensions[r_idx].height = 20
@@ -6470,11 +6507,22 @@ def developer_db_otimizar():
         try:
             init_db()
             conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("VACUUM")
-            cur.execute("ANALYZE")
-            conn.commit()
+            if is_postgres_active():
+                raw = getattr(conn, "_conn", None)
+                if raw is not None:
+                    raw.autocommit = True
+                cur = conn.cursor()
+                cur.execute("VACUUM")
+                cur.execute("ANALYZE")
+                if raw is not None:
+                    raw.autocommit = False
+            else:
+                cur = conn.cursor()
+                cur.execute("VACUUM")
+                cur.execute("ANALYZE")
+                conn.commit()
             try:
+                cur = conn.cursor()
                 cur.execute(
                     "INSERT INTO audits (id, actor_id, actor_username, target_user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (str(uuid.uuid4()), session.get("user_id"), g.user.get("username") if g.get("user") else "Developer", None, "optimize_database", "VACUUM + ANALYZE executado", agora().isoformat())

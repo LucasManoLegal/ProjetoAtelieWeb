@@ -9,7 +9,12 @@ import re
 import sys
 import json
 import uuid
+import sqlite3
+import threading
 from typing import Any, Dict, List, Optional, Tuple
+
+# Guarda referência direta à função nativa sqlite3.connect para evitar loops de recursão
+_raw_sqlite3_connect = sqlite3.connect
 
 # ── Carregador simples de .env sem dependências externas ───────────────────────
 
@@ -50,8 +55,8 @@ TABLE_PRIMARY_KEYS = {
     "movimentacoes": ["id"],
     "sobras": ["id"],
     "despesas": ["id"],
-    "usuarios": ["id"],
-    "roles": ["id"],
+    "usuarios": ["username"],
+    "roles": ["name"],
     "role_permissions": ["role", "resource"],
     "audits": ["id"],
     "relatorios_customizados": ["id"],
@@ -195,7 +200,11 @@ def convert_sqlite_to_pg(sql: str) -> str:
     clean = sql.strip()
     clean_upper = clean.upper()
 
-    # Comandos SQLite PRAGMA são no-op no PostgreSQL
+    # Comandos SQLite PRAGMA
+    if clean_upper in ("PRAGMA JOURNAL_MODE", "PRAGMA JOURNAL_MODE;"):
+        return "SELECT 'wal'::text AS journal_mode;"
+    if clean_upper in ("PRAGMA INTEGRITY_CHECK", "PRAGMA INTEGRITY_CHECK;"):
+        return "SELECT 'ok'::text AS integrity_check;"
     if clean_upper.startswith("PRAGMA"):
         return "-- PRAGMA ignored"
 
@@ -222,6 +231,10 @@ def convert_sqlite_to_pg(sql: str) -> str:
     # ORDER BY col COLLATE NOCASE -> ORDER BY lower(col)
     clean = re.sub(r"\bORDER\s+BY\s+([a-zA-Z0-9_]+)\s+COLLATE\s+NOCASE\b", r"ORDER BY lower(\1)", clean, flags=re.IGNORECASE)
     clean = re.sub(r"\bCOLLATE\s+NOCASE\b", "", clean, flags=re.IGNORECASE)
+
+    # datetime('now') / date('now') -> CURRENT_TIMESTAMP / CURRENT_DATE
+    clean = re.sub(r"\bdatetime\s*\(\s*'now'\s*\)", "CURRENT_TIMESTAMP", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"\bdate\s*\(\s*'now'\s*\)", "CURRENT_DATE", clean, flags=re.IGNORECASE)
 
     # Substitui marcadores de parâmetro ? -> %s
     clean = replace_placeholders(clean)
@@ -319,18 +332,33 @@ class PgCursorWrapper:
         return self
 
     def fetchone(self):
-        row = self._cur.fetchone()
+        if not getattr(self._cur, "description", None):
+            return None
+        try:
+            row = self._cur.fetchone()
+        except Exception:
+            return None
         if row is None:
             return None
         return DbRow(row, self._cur.description)
 
     def fetchall(self):
-        rows = self._cur.fetchall()
+        if not getattr(self._cur, "description", None):
+            return []
+        try:
+            rows = self._cur.fetchall()
+        except Exception:
+            return []
         desc = self._cur.description
         return [DbRow(r, desc) for r in rows]
 
     def fetchmany(self, size=None):
-        rows = self._cur.fetchmany(size) if size is not None else self._cur.fetchmany()
+        if not getattr(self._cur, "description", None):
+            return []
+        try:
+            rows = self._cur.fetchmany(size) if size is not None else self._cur.fetchmany()
+        except Exception:
+            return []
         desc = self._cur.description
         return [DbRow(r, desc) for r in rows]
 
@@ -351,9 +379,60 @@ class PgCursorWrapper:
             yield DbRow(row, desc)
 
 
+# ── Gerenciador de Pool de Conexões PostgreSQL ───────────────────────────────
+
+_pg_pool = None
+_pg_pool_lock = threading.Lock()
+
+
+def get_pg_pool(minconn=2, maxconn=20):
+    """Retorna o pool de conexões ThreadedConnectionPool do PostgreSQL (singleton thread-safe)."""
+    global _pg_pool
+    if _pg_pool is None:
+        with _pg_pool_lock:
+            if _pg_pool is None:
+                cfg = get_postgres_config()
+                if not cfg:
+                    return None
+                try:
+                    from psycopg2 import pool
+                    if "dsn" in cfg:
+                        _pg_pool = pool.ThreadedConnectionPool(minconn=minconn, maxconn=maxconn, dsn=cfg["dsn"])
+                    else:
+                        _pg_pool = pool.ThreadedConnectionPool(
+                            minconn=minconn,
+                            maxconn=maxconn,
+                            host=cfg["host"],
+                            port=cfg["port"],
+                            dbname=cfg["dbname"],
+                            user=cfg["user"],
+                            password=cfg["password"],
+                            sslmode=cfg.get("sslmode", "prefer"),
+                            connect_timeout=5,
+                        )
+                except Exception as ex:
+                    sys.stderr.write(f"[AVISO POOL] Falha ao inicializar ThreadedConnectionPool: {ex}\n")
+                    _pg_pool = None
+    return _pg_pool
+
+
+def close_pg_pool():
+    """Encerra todas as conexões do pool para liberação de recursos."""
+    global _pg_pool
+    with _pg_pool_lock:
+        if _pg_pool is not None:
+            try:
+                _pg_pool.closeall()
+            except Exception:
+                pass
+            _pg_pool = None
+
+
 class PgConnectionWrapper:
-    def __init__(self, raw_conn):
+    def __init__(self, raw_conn, pool=None):
         self._conn = raw_conn
+        self._pool = pool
+        self._closed = False
         self.row_factory = DbRow
 
     def cursor(self):
@@ -366,10 +445,23 @@ class PgConnectionWrapper:
         self._conn.rollback()
 
     def close(self):
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        if self._closed:
+            return
+        self._closed = True
+        if self._pool is not None:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                pass
+        else:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
 
     def __enter__(self):
         return self
@@ -384,16 +476,18 @@ class PgConnectionWrapper:
 # ── Provedor Principal de Conexão (get_db_connection) ─────────────────────────
 
 def _get_sqlite_connection():
-    """Retorna conexão local SQLite com WAL e timeout."""
-    import sqlite3
+    """Retorna conexão local SQLite com WAL, timeout e cache em RAM para alto desempenho."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15.0)
+    conn = _raw_sqlite3_connect(DB_PATH, timeout=15.0)
     conn.row_factory = sqlite3.Row
     try:
         cur = conn.cursor()
         cur.execute("PRAGMA journal_mode = WAL;")
         cur.execute("PRAGMA busy_timeout = 5000;")
         cur.execute("PRAGMA synchronous = NORMAL;")
+        cur.execute("PRAGMA cache_size = -64000;")   # 64MB cache em RAM
+        cur.execute("PRAGMA mmap_size = 268435456;")  # 256MB memória mapeada
+        cur.execute("PRAGMA temp_store = MEMORY;")
     except Exception:
         pass
     return conn
@@ -401,27 +495,39 @@ def _get_sqlite_connection():
 
 def get_db_connection():
     """Retorna uma conexão ativa pronta para uso:
-    - Se PostgreSQL estiver ativo: conecta via psycopg2 e encapsula no PgConnectionWrapper.
+    - Se PostgreSQL estiver ativo: obtém conexão reaproveitada do ThreadedConnectionPool (reuso ultrarrápido).
     - Se falhar e DB_FALLBACK_SQLITE estiver ativo: utiliza SQLite como contingência segura.
-    - Se SQLite estiver ativo: conecta ao arquivo DB_PATH.
+    - Se SQLite estiver ativo: conecta ao arquivo DB_PATH com pragmas de alto desempenho.
     """
     if is_postgres_active():
         try:
-            import psycopg2
-            cfg = get_postgres_config()
-            if "dsn" in cfg:
-                conn = psycopg2.connect(cfg["dsn"], connect_timeout=5)
+            p = get_pg_pool()
+            if p is not None:
+                raw_conn = p.getconn()
+                # Verifica integridade da conexão reaproveitada do pool
+                if getattr(raw_conn, "closed", 0) != 0:
+                    try:
+                        p.putconn(raw_conn, close=True)
+                    except Exception:
+                        pass
+                    raw_conn = p.getconn()
+                return PgConnectionWrapper(raw_conn, pool=p)
             else:
-                conn = psycopg2.connect(
-                    host=cfg["host"],
-                    port=cfg["port"],
-                    dbname=cfg["dbname"],
-                    user=cfg["user"],
-                    password=cfg["password"],
-                    sslmode=cfg.get("sslmode", "prefer"),
-                    connect_timeout=5,
-                )
-            return PgConnectionWrapper(conn)
+                import psycopg2
+                cfg = get_postgres_config()
+                if "dsn" in cfg:
+                    conn = psycopg2.connect(cfg["dsn"], connect_timeout=5)
+                else:
+                    conn = psycopg2.connect(
+                        host=cfg["host"],
+                        port=cfg["port"],
+                        dbname=cfg["dbname"],
+                        user=cfg["user"],
+                        password=cfg["password"],
+                        sslmode=cfg.get("sslmode", "prefer"),
+                        connect_timeout=5,
+                    )
+                return PgConnectionWrapper(conn)
         except Exception as ex:
             allow_fallback = os.environ.get("DB_FALLBACK_SQLITE", "1").lower() in ("1", "true", "yes")
             if allow_fallback:
@@ -588,38 +694,39 @@ def init_db():
         """
     )
 
-    # Adiciona colunas extras em usuarios caso faltem
-    for col, ctype in [
-        ("role", "TEXT"),
-        ("session_version", "INTEGER DEFAULT 0"),
-        ("nome", "TEXT"),
-        ("avatar", "TEXT"),
-        ("roles", "TEXT"),
-        ("email", "TEXT"),
-        ("google_id", "TEXT"),
-        ("google_refresh_token", "TEXT"),
-        ("google_access_token", "TEXT"),
-        ("google_token_expiry", "TEXT"),
-    ]:
-        try:
-            cur.execute(f"ALTER TABLE usuarios ADD COLUMN {col} {ctype}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
+    # Adiciona colunas extras em usuarios/produtos/pedidos caso faltem (legado SQLite)
+    if not is_postgres_active():
+        for col, ctype in [
+            ("role", "TEXT"),
+            ("session_version", "INTEGER DEFAULT 0"),
+            ("nome", "TEXT"),
+            ("avatar", "TEXT"),
+            ("roles", "TEXT"),
+            ("email", "TEXT"),
+            ("google_id", "TEXT"),
+            ("google_refresh_token", "TEXT"),
+            ("google_access_token", "TEXT"),
+            ("google_token_expiry", "TEXT"),
+        ]:
+            try:
+                cur.execute(f"ALTER TABLE usuarios ADD COLUMN {col} {ctype}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
-    for col, ctype in [("gtin", "TEXT"), ("estoque_pronto", "INTEGER DEFAULT 0")]:
-        try:
-            cur.execute(f"ALTER TABLE produtos ADD COLUMN {col} {ctype}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
+        for col, ctype in [("gtin", "TEXT"), ("estoque_pronto", "INTEGER DEFAULT 0")]:
+            try:
+                cur.execute(f"ALTER TABLE produtos ADD COLUMN {col} {ctype}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
-    for col, ctype in [("usou_estoque_pronto", "INTEGER DEFAULT 0")]:
-        try:
-            cur.execute(f"ALTER TABLE pedidos ADD COLUMN {col} {ctype}")
-            conn.commit()
-        except Exception:
-            conn.rollback()
+        for col, ctype in [("usou_estoque_pronto", "INTEGER DEFAULT 0")]:
+            try:
+                cur.execute(f"ALTER TABLE pedidos ADD COLUMN {col} {ctype}")
+                conn.commit()
+            except Exception:
+                conn.rollback()
 
     # roles
     cur.execute(
@@ -765,6 +872,29 @@ def init_db():
 
     # app_meta
     cur.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
+
+    # ── Índices Estratégicos de Alta Performance ──────────────────────────────
+    indices_performance = [
+        ("idx_usuarios_username", "CREATE INDEX IF NOT EXISTS idx_usuarios_username ON usuarios(username)"),
+        ("idx_usuarios_email", "CREATE INDEX IF NOT EXISTS idx_usuarios_email ON usuarios(email)"),
+        ("idx_usuarios_google_id", "CREATE INDEX IF NOT EXISTS idx_usuarios_google_id ON usuarios(google_id)"),
+        ("idx_pedidos_status", "CREATE INDEX IF NOT EXISTS idx_pedidos_status ON pedidos(status)"),
+        ("idx_pedidos_created_at", "CREATE INDEX IF NOT EXISTS idx_pedidos_created_at ON pedidos(created_at)"),
+        ("idx_pedidos_cliente", "CREATE INDEX IF NOT EXISTS idx_pedidos_cliente ON pedidos(cliente)"),
+        ("idx_produtos_nome", "CREATE INDEX IF NOT EXISTS idx_produtos_nome ON produtos(nome)"),
+        ("idx_produtos_gtin", "CREATE INDEX IF NOT EXISTS idx_produtos_gtin ON produtos(gtin)"),
+        ("idx_materiais_categoria", "CREATE INDEX IF NOT EXISTS idx_materiais_categoria ON materiais(categoria)"),
+        ("idx_agendamentos_ativo_proximo", "CREATE INDEX IF NOT EXISTS idx_agendamentos_ativo_proximo ON agendamentos_email(ativo, proximo_envio)"),
+        ("idx_audits_created", "CREATE INDEX IF NOT EXISTS idx_audits_created ON audits(created_at)"),
+        ("idx_audits_actor", "CREATE INDEX IF NOT EXISTS idx_audits_actor ON audits(actor_username)"),
+        ("idx_despesas_data", "CREATE INDEX IF NOT EXISTS idx_despesas_data ON despesas(data)"),
+        ("idx_despesas_categoria", "CREATE INDEX IF NOT EXISTS idx_despesas_categoria ON despesas(categoria)"),
+    ]
+    for _, sql_idx in indices_performance:
+        try:
+            cur.execute(sql_idx)
+        except Exception:
+            pass
 
     conn.commit()
     conn.close()

@@ -61,7 +61,7 @@
         {% endif %}
 
         <div style="font-size:12.5px; color:var(--muted); display:flex; flex-wrap:wrap; gap:12px;">
-          <span>🕒 <strong>Data/Hora:</strong> {{ (h.created_at or '')[:19]|replace('T', ' ') }}</span>
+          <span>🕒 <strong>Data/Hora:</strong> {{ (h.created_at|string)[:19]|replace('T', ' ') }}</span>
           <span>👤 <strong>Disparado por:</strong> {{ h.enviado_por or 'Sistema' }}</span>
         </div>
       </div>
