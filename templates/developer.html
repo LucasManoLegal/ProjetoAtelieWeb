@@ -40,9 +40,9 @@
       </div>
 
       <div style="background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 10px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
-        <span style="font-size: 14px;">🗄️</span>
-        <span style="color: var(--muted);">SQLite:</span>
-        <span style="font-weight: 700; color: var(--primary);">{{ db_stats.size_mb }} MB</span>
+        <span style="font-size: 14px;">{% if db_stats.is_postgres %}🐘{% else %}🗄️{% endif %}</span>
+        <span style="color: var(--muted);">Banco:</span>
+        <span style="font-weight: 700; color: var(--primary);">{% if db_stats.is_postgres %}PostgreSQL{% else %}SQLite ({{ db_stats.size_mb }} MB){% endif %}</span>
       </div>
 
       <div style="background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 10px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
@@ -283,39 +283,76 @@
     
     <!-- Status do Banco de Dados -->
     <div class="card" style="padding: 22px;">
-      <h3 class="font-serif" style="margin: 0 0 14px 0; font-size: 19px; color: var(--primary); font-weight: 800;">
-        🗄️ Informações do Armazenamento SQLite
-      </h3>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <h3 class="font-serif" style="margin: 0; font-size: 19px; color: var(--primary); font-weight: 800;">
+          {% if db_stats.is_postgres %}🐘 Banco de Dados PostgreSQL{% else %}🗄️ Armazenamento SQLite Local{% endif %}
+        </h3>
+        <span class="badge" style="background: {% if db_stats.connected %}rgba(16, 185, 129, 0.15); color: #059669;{% else %}rgba(239, 68, 68, 0.15); color: #dc2626;{% endif %} font-weight: 700; padding: 4px 10px; border-radius: 8px;">
+          {% if db_stats.connected %}🟢 Conectado{% else %}🔴 Desconectado (Contingência){% endif %}
+        </span>
+      </div>
+
+      {% if db_stats.error %}
+        <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #b91c1c; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 14px;">
+          ⚠️ <strong>Aviso:</strong> {{ db_stats.error }}
+        </div>
+      {% endif %}
+
       <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-        <tr style="border-bottom: 1px solid var(--border);">
-          <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Arquivo do Banco:</td>
-          <td style="padding: 8px 0; font-family: monospace; font-size: 13px; text-align: right;">{{ db_stats.path }}</td>
-        </tr>
-        <tr style="border-bottom: 1px solid var(--border);">
-          <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Tamanho no Disco:</td>
-          <td style="padding: 8px 0; font-weight: 700; color: var(--primary); text-align: right;">{{ db_stats.size_kb }} KB ({{ db_stats.size_mb }} MB)</td>
-        </tr>
-        <tr style="border-bottom: 1px solid var(--border);">
-          <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Versão SQLite:</td>
-          <td style="padding: 8px 0; font-family: monospace; text-align: right;">{{ db_stats.sqlite_version }}</td>
-        </tr>
-        <tr style="border-bottom: 1px solid var(--border);">
-          <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Journal Mode:</td>
-          <td style="padding: 8px 0; font-weight: 700; color: var(--success); text-align: right;">{{ db_stats.journal_mode }}</td>
-        </tr>
-        <tr>
-          <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Integridade (PRAGMA):</td>
-          <td style="padding: 8px 0; font-weight: 700; color: var(--success); text-align: right;">{{ db_stats.integrity }}</td>
-        </tr>
+        {% if db_stats.is_postgres %}
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Motor:</td>
+            <td style="padding: 8px 0; font-weight: 700; color: #2563eb; text-align: right;">PostgreSQL (Servidor)</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Host do Servidor:</td>
+            <td style="padding: 8px 0; font-family: monospace; font-size: 13px; text-align: right;">{{ db_stats.host }}:{{ db_stats.port }}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Nome do Banco:</td>
+            <td style="padding: 8px 0; font-weight: 700; color: var(--primary); text-align: right;">{{ db_stats.dbname }}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Usuário:</td>
+            <td style="padding: 8px 0; font-family: monospace; text-align: right;">{{ db_stats.user }}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Versão:</td>
+            <td style="padding: 8px 0; font-family: monospace; text-align: right;">{{ db_stats.version }}</td>
+          </tr>
+        {% else %}
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Arquivo do Banco:</td>
+            <td style="padding: 8px 0; font-family: monospace; font-size: 13px; text-align: right;">{{ db_stats.path }}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Tamanho no Disco:</td>
+            <td style="padding: 8px 0; font-weight: 700; color: var(--primary); text-align: right;">{{ db_stats.size_kb }} KB ({{ db_stats.size_mb }} MB)</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Versão:</td>
+            <td style="padding: 8px 0; font-family: monospace; text-align: right;">{{ db_stats.version }}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid var(--border);">
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Journal Mode:</td>
+            <td style="padding: 8px 0; font-weight: 700; color: var(--success); text-align: right;">{{ db_stats.journal_mode }}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: var(--muted); font-weight: 600;">Integridade (PRAGMA):</td>
+            <td style="padding: 8px 0; font-weight: 700; color: var(--success); text-align: right;">{{ db_stats.integrity }}</td>
+          </tr>
+        {% endif %}
       </table>
 
       <div style="display: flex; gap: 10px; margin-top: 18px; flex-wrap: wrap;">
-        <a href="{{ url_for('developer_db_backup') }}" class="btn-primary" style="flex: 1; text-align: center; text-decoration: none; padding: 10px 14px; font-size: 14.5px;">
-          💾 Baixar Backup (.sqlite3)
-        </a>
+        {% if not db_stats.is_postgres %}
+          <a href="{{ url_for('developer_db_backup') }}" class="btn-primary" style="flex: 1; text-align: center; text-decoration: none; padding: 10px 14px; font-size: 14.5px;">
+            💾 Baixar Backup (.sqlite3)
+          </a>
+        {% endif %}
         <form method="post" action="{{ url_for('developer_db_otimizar') }}" style="flex: 1; margin: 0;">
           <button type="submit" class="btn-secondary" style="width: 100%; padding: 10px 14px; font-size: 14.5px;">
-            🧹 Otimizar (VACUUM)
+            🧹 Otimizar Base ({% if db_stats.is_postgres %}VACUUM ANALYZE{% else %}VACUUM{% endif %})
           </button>
         </form>
       </div>

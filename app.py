@@ -45,7 +45,21 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # No Vercel (serverless) o disco do projeto é só-leitura; gravamos em /tmp lá.
 DATA_DIR = "/tmp" if os.environ.get("VERCEL") else BASE_DIR + "/data"
 DB_PATH = os.path.join(DATA_DIR, "data.db")
-USE_SQLITE = os.environ.get("USE_SQLITE", "1") in ("1", "true", "yes")
+
+import db
+from db import get_db_connection, get_db_stats, test_db_connection, is_postgres_active
+
+# Interceptor transparente de conexão de banco:
+_orig_sqlite3_connect = sqlite3.connect
+
+def smart_db_connect(path=DB_PATH, *args, **kwargs):
+    if path == DB_PATH:
+        return get_db_connection()
+    return _orig_sqlite3_connect(path, *args, **kwargs)
+
+sqlite3.connect = smart_db_connect
+
+USE_SQLITE = is_postgres_active() or (os.environ.get("USE_SQLITE", "1") in ("1", "true", "yes"))
 DATA_FILE = os.path.join(DATA_DIR, "materiais.json")
 SEED_FILE = os.path.join(BASE_DIR, "data", "materiais.json")
 
@@ -797,17 +811,18 @@ def init_db():
         cur.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
         cur.execute("SELECT value FROM app_meta WHERE key='seed_padrao_v5_aplicado'")
         if not cur.fetchone():
-            cur.execute("DELETE FROM pedidos")
-            cur.execute("DELETE FROM sobras")
-            cur.execute("DELETE FROM despesas")
-            cur.execute("DELETE FROM movimentacoes")
-            cur.execute("DELETE FROM relatorios_customizados")
-            cur.execute("DELETE FROM produtos")
-            cur.execute("DELETE FROM materiais")
-            cur.execute("DELETE FROM usuarios WHERE username != 'admin'")
-            cur.execute("DELETE FROM roles WHERE is_system = 0")
-            cur.execute("DELETE FROM role_permissions WHERE role NOT IN (SELECT name FROM roles WHERE is_system = 1)")
-            cur.execute("UPDATE usuarios SET role='Admin', roles=? WHERE username='admin'", (serializar_roles(['Admin']),))
+            if not is_postgres_active():
+                cur.execute("DELETE FROM pedidos")
+                cur.execute("DELETE FROM sobras")
+                cur.execute("DELETE FROM despesas")
+                cur.execute("DELETE FROM movimentacoes")
+                cur.execute("DELETE FROM relatorios_customizados")
+                cur.execute("DELETE FROM produtos")
+                cur.execute("DELETE FROM materiais")
+                cur.execute("DELETE FROM usuarios WHERE username != 'admin'")
+                cur.execute("DELETE FROM roles WHERE is_system = 0")
+                cur.execute("DELETE FROM role_permissions WHERE role NOT IN (SELECT name FROM roles WHERE is_system = 1)")
+                cur.execute("UPDATE usuarios SET role='Admin', roles=? WHERE username='admin'", (serializar_roles(['Admin']),))
 
             # Se a tabela de materiais ficou vazia, carrega do SEED_FILE
             if os.path.exists(SEED_FILE):
@@ -6255,68 +6270,14 @@ def developer_dashboard():
         except Exception:
             pass
 
-    # SQLite Database Stats
-    db_stats = {
-        "path": DB_PATH,
-        "size_kb": 0,
-        "size_mb": 0.0,
-        "sqlite_version": sqlite3.sqlite_version,
-        "journal_mode": "WAL",
-        "integrity": "OK",
-        "tables": []
-    }
+    # Database Stats
+    db_stats = get_db_stats()
     audits_list = []
 
     if USE_SQLITE:
         try:
-            if os.path.exists(DB_PATH):
-                sz = os.path.getsize(DB_PATH)
-                db_stats["size_kb"] = round(sz / 1024, 1)
-                db_stats["size_mb"] = round(sz / (1024 * 1024), 2)
-            
-            init_db()
-            conn = sqlite3.connect(DB_PATH)
-            conn.row_factory = sqlite3.Row
+            conn = get_db_connection()
             cur = conn.cursor()
-
-            # Journal mode & Integrity
-            try:
-                cur.execute("PRAGMA journal_mode")
-                row = cur.fetchone()
-                if row:
-                    db_stats["journal_mode"] = str(row[0]).upper()
-                cur.execute("PRAGMA integrity_check")
-                row = cur.fetchone()
-                if row:
-                    db_stats["integrity"] = str(row[0])
-            except Exception:
-                pass
-
-            # Table counts
-            tabelas_principais = [
-                ("materiais", "Materiais em Estoque"),
-                ("produtos", "Produtos Artesanais"),
-                ("pedidos", "Pedidos de Clientes"),
-                ("movimentacoes", "Movimentações de Estoque"),
-                ("sobras", "Sobras e Retalhos"),
-                ("despesas", "Despesas Financeiras"),
-                ("usuarios", "Usuários"),
-                ("roles", "Papéis de Acesso"),
-                ("role_permissions", "Matriz de Permissões"),
-                ("audits", "Trilha de Auditoria"),
-                ("agendamentos_email", "Agendamentos de E-mail"),
-                ("historico_envios_email", "Histórico de Envios"),
-                ("configuracoes_sso", "Configurações SSO"),
-            ]
-            for tname, tdesc in tabelas_principais:
-                try:
-                    cur.execute(f"SELECT COUNT(1) FROM {tname}")
-                    cnt = cur.fetchone()[0]
-                    db_stats["tables"].append({"name": tname, "desc": tdesc, "count": cnt})
-                except Exception:
-                    pass
-
-            # Trilha de auditoria recente
             cur.execute("SELECT * FROM audits ORDER BY created_at DESC LIMIT 150")
             audits_list = [dict(r) for r in cur.fetchall()]
             conn.close()
@@ -6335,7 +6296,7 @@ def developer_dashboard():
         "scheduler_running": _SCHEDULER_RUNNING,
         "total_users": len(carregar_usuarios()),
         "total_roles": len(papeis),
-        "db_mode": "SQLite WAL" if USE_SQLITE else "JSON Fallback",
+        "db_mode": "PostgreSQL (Servidor)" if is_postgres_active() else ("SQLite WAL" if USE_SQLITE else "JSON Fallback"),
     }
 
     return render_template(

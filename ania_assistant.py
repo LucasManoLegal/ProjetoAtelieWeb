@@ -119,6 +119,16 @@ class AniaAssistant:
     def _db_path(self):
         return self._get_helper('DB_PATH', 'atelie.db')
 
+    def _get_connection(self):
+        fn = self._get_helper('get_db_connection')
+        if fn:
+            return fn()
+        try:
+            import db
+            return db.get_db_connection()
+        except Exception:
+            return sqlite3.connect(self._db_path)
+
     def processar_mensagem(self, prompt: str, user: dict, history: Optional[list] = None, mode: Optional[str] = None) -> dict:
         """
         Processador central configurável:
@@ -516,7 +526,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("UPDATE materiais SET quantidade=?, updated_at=? WHERE id=?", (novo_estoque, dt_iso, material_alvo["id"]))
             cur.execute(
@@ -566,7 +576,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("UPDATE materiais SET quantidade=?, updated_at=? WHERE id=?", (novo_estoque, dt_iso, material_alvo["id"]))
             cur.execute(
@@ -626,7 +636,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO materiais (id,nome,categoria,emoji,quantidade,unidade,quantidade_minima,custo,gtin,foto,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -660,7 +670,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("DELETE FROM materiais WHERE id=?", (material_alvo["id"],))
             conn.commit()
@@ -722,7 +732,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             if usar_pronta:
                 cur.execute("UPDATE produtos SET estoque_pronto=?, updated_at=? WHERE id=?", (estoque_pronto - qtd, dt_pedido.isoformat(), produto_alvo["id"]))
@@ -792,7 +802,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("UPDATE pedidos SET status=?, updated_at=? WHERE id=?", (novo_status, now_iso, pedido_id))
             conn.commit()
@@ -821,7 +831,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("DELETE FROM pedidos WHERE id=?", (pedido_alvo["id"],))
             conn.commit()
@@ -896,7 +906,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("UPDATE produtos SET estoque_pronto=?, updated_at=? WHERE id=?", (novo_est, dt_iso, produto_alvo["id"]))
             cur.execute(
@@ -928,7 +938,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("DELETE FROM produtos WHERE id=?", (produto_alvo["id"],))
             conn.commit()
@@ -958,7 +968,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO sobras (id,material_id,descricao,quantidade,unidade,data,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -993,7 +1003,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("UPDATE sobras SET status=?, updated_at=? WHERE id=?", (novo_status, now_iso, sobra_alvo["id"]))
             conn.commit()
@@ -1016,7 +1026,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("DELETE FROM sobras WHERE id=?", (sobra_alvo["id"],))
             conn.commit()
@@ -1045,7 +1055,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO despesas (id,descricao,valor,categoria,data,created_at) VALUES (?,?,?,?,?,?)",
@@ -1078,7 +1088,7 @@ class AniaAssistant:
 
         if self._use_sqlite:
             self._init_db()
-            conn = sqlite3.connect(self._db_path)
+            conn = self._get_connection()
             cur = conn.cursor()
             cur.execute("DELETE FROM despesas WHERE id=?", (desp_alvo["id"],))
             conn.commit()
@@ -1655,7 +1665,7 @@ class AniaAssistant:
         if self._use_sqlite:
             try:
                 self._init_db()
-                conn = sqlite3.connect(self._db_path)
+                conn = self._get_connection()
                 cur = conn.cursor()
                 for role in roles:
                     cur.execute(f"SELECT {col} FROM role_permissions WHERE role = ? AND resource = ?", (role, recurso))
