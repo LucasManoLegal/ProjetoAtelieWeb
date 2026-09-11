@@ -10,6 +10,7 @@ import sys
 import json
 import uuid
 import sqlite3
+import datetime
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -992,6 +993,47 @@ def init_db():
             cur.execute(sql_idx)
         except Exception:
             pass
+
+    # ── Garante usuário developer padrão e papel Developer ─────────────────────
+    try:
+        now_str = datetime.datetime.now().isoformat()
+        try:
+            from werkzeug.security import generate_password_hash
+            dev_hash = generate_password_hash("developer")
+        except Exception:
+            dev_hash = "PLAIN:developer"
+
+        # Garante papel Developer em roles
+        cur.execute("SELECT name FROM roles WHERE name='Developer'")
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO roles (name, description, is_system, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                ("Developer", "Acesso irrestrito e controle de infraestrutura", now_str, now_str)
+            )
+
+        # Garante papel Admin em roles
+        cur.execute("SELECT name FROM roles WHERE name='Admin'")
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO roles (name, description, is_system, created_at, updated_at) VALUES (?, ?, 1, ?, ?)",
+                ("Admin", "Acesso administrativo completo", now_str, now_str)
+            )
+
+        # Garante usuário developer em usuarios
+        cur.execute("SELECT id FROM usuarios WHERE username='developer'")
+        if not cur.fetchone():
+            dev_uid = str(uuid.uuid4())
+            cur.execute(
+                "INSERT INTO usuarios (id, username, password_hash, role, roles, nome, email, created_at, session_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                (dev_uid, "developer", dev_hash, "Developer", json.dumps(["Developer"]), "Desenvolvedor", "developer@ateliehaiti.com", now_str)
+            )
+        else:
+            cur.execute(
+                "UPDATE usuarios SET role='Developer', roles=? WHERE username='developer'",
+                (json.dumps(["Developer"]),)
+            )
+    except Exception as ex:
+        sys.stderr.write(f"[SEED DEVELOPER ERRO] {ex}\n")
 
     conn.commit()
     conn.close()

@@ -21,7 +21,8 @@
       {% if g.get('user') %}
       <a href="{{ url_for('minha_conta') }}" class="drawer-user-card" title="Editar meu perfil">
         {% if g.user.get('avatar') %}
-          <img src="{{ url_for('uploaded_file', filename=g.user.get('avatar')) }}" alt="Avatar" class="avatar-img">
+          {% set av_url = g.user.get('avatar') if g.user.get('avatar').startswith('http') else url_for('uploaded_file', filename=g.user.get('avatar')) %}
+          <img src="{{ av_url }}" alt="Avatar" class="avatar-img">
         {% else %}
           <div class="avatar-placeholder">
             {{ (g.user.get('nome') or g.user.get('username'))[:1]|upper }}
@@ -98,7 +99,8 @@
         {% if g.get('user') %}
           <a href="{{ url_for('minha_conta') }}" class="header-user-btn" title="Meu perfil">
             {% if g.user.get('avatar') %}
-              <img src="{{ url_for('uploaded_file', filename=g.user.get('avatar')) }}" alt="Avatar" class="avatar-img-sm">
+              {% set av_url = g.user.get('avatar') if g.user.get('avatar').startswith('http') else url_for('uploaded_file', filename=g.user.get('avatar')) %}
+              <img src="{{ av_url }}" alt="Avatar" class="avatar-img-sm">
             {% else %}
               <div class="avatar-placeholder-sm">
                 {{ (g.user.get('nome') or g.user.get('username'))[:1]|upper }}

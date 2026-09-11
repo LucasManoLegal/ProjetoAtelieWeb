@@ -21,7 +21,8 @@
     <div style="display:flex; align-items:center; gap:20px; flex-wrap:wrap; margin-bottom:20px; padding-bottom:16px; border-bottom:1px dashed var(--border);">
       <div style="position:relative; width:84px; height:84px;">
         {% if user.avatar %}
-          <img id="avatar-preview" src="{{ url_for('uploaded_file', filename=user.avatar) }}" alt="Foto de Perfil"
+          {% set user_av_url = user.avatar if user.avatar.startswith('http') else url_for('uploaded_file', filename=user.avatar) %}
+          <img id="avatar-preview" src="{{ user_av_url }}" alt="Foto de Perfil"
                style="width:84px; height:84px; border-radius:50%; object-fit:cover; border:2.5px solid var(--primary); box-shadow:0 2px 8px rgba(0,0,0,0.1);">
         {% else %}
           <div id="avatar-fallback" style="width:84px; height:84px; border-radius:50%; background:var(--accent-lt); color:var(--primary); font-weight:700; font-size:32px; display:flex; align-items:center; justify-content:center; border:2.5px solid var(--primary);">

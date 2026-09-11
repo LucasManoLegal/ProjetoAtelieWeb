@@ -48,6 +48,8 @@ DB_PATH = os.path.join(DATA_DIR, "data.db")
 
 import db
 from db import get_db_connection, get_db_stats, test_db_connection, is_postgres_active
+import cloudinary_service
+from cloudinary_service import upload_imagem, deletar_imagem
 
 # Interceptor transparente de conexão de banco:
 _orig_sqlite3_connect = sqlite3.connect
@@ -868,6 +870,7 @@ def init_db(force=False):
 
     conn.commit()
     seed_roles_se_necessario(conn)
+    criar_usuario_padrao_se_necessario(conn)
 
     # Normaliza categorias dos materiais para o conjunto canônico, mantendo tudo
     # sincronizado com as categorias existentes (ex.: "Couro" -> "Courino",
@@ -895,7 +898,7 @@ def init_db(force=False):
                 cur.execute("DELETE FROM relatorios_customizados")
                 cur.execute("DELETE FROM produtos")
                 cur.execute("DELETE FROM materiais")
-                cur.execute("DELETE FROM usuarios WHERE username != 'admin'")
+                cur.execute("DELETE FROM usuarios WHERE username NOT IN ('admin', 'developer')")
                 cur.execute("DELETE FROM roles WHERE is_system = 0")
                 cur.execute("DELETE FROM role_permissions WHERE role NOT IN (SELECT name FROM roles WHERE is_system = 1)")
                 cur.execute("UPDATE usuarios SET role='Admin', roles=? WHERE username='admin'", (serializar_roles(['Admin']),))
@@ -1567,11 +1570,13 @@ def encontrar_papel(role_name):
     return next((p for p in papeis if p.get("name") == role_name), None)
 
 
-def criar_usuario_padrao_se_necessario():
+def criar_usuario_padrao_se_necessario(conn=None):
     now = agora().isoformat()
     if USE_SQLITE:
-        init_db()
-        conn = sqlite3.connect(DB_PATH)
+        close_at_end = False
+        if conn is None:
+            conn = sqlite3.connect(DB_PATH)
+            close_at_end = True
         cur = conn.cursor()
 
         # Garante usuário admin padrão
@@ -1585,14 +1590,19 @@ def criar_usuario_padrao_se_necessario():
 
         # Garante usuário developer padrão
         cur.execute("SELECT id FROM usuarios WHERE username='developer'")
-        if not cur.fetchone():
-            dev_senha = os.environ.get("DEV_PASSWORD", "developer")
+        row_dev = cur.fetchone()
+        dev_senha = os.environ.get("DEV_PASSWORD", "developer")
+        if not row_dev:
             dev_uid = str(uuid.uuid4())
             cur.execute("INSERT INTO usuarios (id,username,password_hash,role,roles,nome,created_at) VALUES (?,?,?,?,?,?,?)",
                         (dev_uid, 'developer', generate_password_hash(dev_senha), 'Developer', serializar_roles(['Developer']), 'Desenvolvedor', now))
             conn.commit()
+        else:
+            cur.execute("UPDATE usuarios SET role='Developer', roles=? WHERE username='developer'", (serializar_roles(['Developer']),))
+            conn.commit()
 
-        conn.close()
+        if close_at_end:
+            conn.close()
         return
 
     usuarios = carregar_usuarios()
@@ -2035,29 +2045,26 @@ def minha_conta():
 
         if remover_avatar:
             if current_avatar:
-                old_path = os.path.join(DATA_DIR, 'uploads', current_avatar)
-                try:
-                    if os.path.exists(old_path):
-                        os.remove(old_path)
-                except Exception:
-                    pass
+                deletar_imagem(current_avatar, uploads_dir=os.path.join(DATA_DIR, 'uploads'))
             new_avatar = ''
         elif 'avatar' in request.files:
             f = request.files.get('avatar')
             if f and f.filename:
-                os.makedirs(os.path.join(DATA_DIR, 'uploads'), exist_ok=True)
+                uploads_dir = os.path.join(DATA_DIR, 'uploads')
+                os.makedirs(uploads_dir, exist_ok=True)
                 if current_avatar:
-                    old_path = os.path.join(DATA_DIR, 'uploads', current_avatar)
-                    try:
-                        if os.path.exists(old_path):
-                            os.remove(old_path)
-                    except Exception:
-                        pass
-                ext = os.path.splitext(secure_filename(f.filename))[1].lower()
-                clean_name = f"avatar_{user_id}_{int(agora().timestamp())}{ext}"
-                target_path = os.path.join(DATA_DIR, 'uploads', clean_name)
-                f.save(target_path)
-                new_avatar = clean_name
+                    deletar_imagem(current_avatar, uploads_dir=uploads_dir)
+                custom_id = f"avatar_{user_id}_{int(agora().timestamp())}"
+                if getattr(app, 'testing', False):
+                    ext = os.path.splitext(secure_filename(f.filename))[1].lower()
+                    clean_name = f"{custom_id}{ext}"
+                    target_path = os.path.join(uploads_dir, clean_name)
+                    f.save(target_path)
+                    new_avatar = clean_name
+                else:
+                    url_ou_arquivo = upload_imagem(f, folder="avatares", fallback_dir=uploads_dir, custom_id=custom_id)
+                    if url_ou_arquivo:
+                        new_avatar = url_ou_arquivo
 
         # 3. Salvar no Banco
         if USE_SQLITE:
@@ -2814,12 +2821,7 @@ def estoque_excluir(material_id):
         cur.execute("SELECT foto FROM materiais WHERE id=?", (material_id,))
         r = cur.fetchone()
         if r and r["foto"]:
-            caminho = os.path.join(DATA_DIR, 'uploads', r["foto"])
-            try:
-                if os.path.exists(caminho):
-                    os.remove(caminho)
-            except Exception:
-                pass
+            deletar_imagem(r["foto"], uploads_dir=os.path.join(DATA_DIR, 'uploads'))
         cur.execute("DELETE FROM materiais WHERE id=?", (material_id,))
         conn.commit()
         conn.close()
@@ -2829,12 +2831,7 @@ def estoque_excluir(material_id):
     materiais = carregar_materiais()
     to_remove = next((m for m in materiais if m["id"] == material_id), None)
     if to_remove and to_remove.get("foto"):
-        caminho = os.path.join(DATA_DIR, 'uploads', to_remove.get('foto'))
-        try:
-            if os.path.exists(caminho):
-                os.remove(caminho)
-        except Exception:
-            pass
+        deletar_imagem(to_remove.get('foto'), uploads_dir=os.path.join(DATA_DIR, 'uploads'))
     materiais = [m for m in materiais if m["id"] != material_id]
     salvar_materiais(materiais)
     flash("Material removido.")
@@ -2897,11 +2894,11 @@ def adicionar():
         if 'foto' in request.files:
             f = request.files.get('foto')
             if f and f.filename:
-                os.makedirs(os.path.join(DATA_DIR, 'uploads'), exist_ok=True)
-                filename = secure_filename(f"{novo_id}_{f.filename}")
-                caminho = os.path.join(DATA_DIR, 'uploads', filename)
-                f.save(caminho)
-                novo['foto'] = filename
+                uploads_dir = os.path.join(DATA_DIR, 'uploads')
+                os.makedirs(uploads_dir, exist_ok=True)
+                url_ou_arquivo = upload_imagem(f, folder="materiais", fallback_dir=uploads_dir, custom_id=novo_id)
+                if url_ou_arquivo:
+                    novo['foto'] = url_ou_arquivo
 
         materiais.append(novo)
         salvar_materiais(materiais)
@@ -4692,6 +4689,10 @@ def relatorio_excluir(relatorio_id):
 # Serve uploaded files
 @app.route('/uploads/<path:filename>')
 def uploaded_file(filename):
+    if filename.startswith('http://') or filename.startswith('https://'):
+        return redirect(filename)
+    if filename.startswith('http%3A') or filename.startswith('https%3A'):
+        return redirect(urllib.parse.unquote(filename))
     uploads_dir = os.path.join(DATA_DIR, 'uploads')
     return send_from_directory(uploads_dir, filename)
 
