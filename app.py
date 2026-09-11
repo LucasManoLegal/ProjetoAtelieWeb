@@ -1713,10 +1713,23 @@ def require_login():
         else:
             usuarios = carregar_usuarios()
             user = next((u for u in usuarios if u.get("id") == user_id), None)
+        if user is None:
+            session.pop('user_id', None)
+            session.pop('session_version', None)
+            if request.path.startswith("/api/"):
+                return jsonify({"error": "unauthorized", "denied": True, "reply": "🔒 Usuário não encontrado.", "voice_text": "Usuário não encontrado."}), 401
+            flash('Sessão expirada. Por favor faça login novamente.')
+            return redirect(url_for('login'))
+
         # session invalidation: compare session_version stored in session with DB; if mismatch, force logout
         db_ver = (user.get('session_version') if user else 0)
         sess_ver = session.get('session_version')
-        if sess_ver is None or sess_ver != db_ver:
+        if sess_ver is None:
+            # Se for uma sessão ativa válida sem versionamento explícito, sincroniza suavemente sem desconectar
+            session['session_version'] = db_ver
+            sess_ver = db_ver
+
+        if sess_ver != db_ver:
             # expire session
             session.pop('user_id', None)
             session.pop('session_version', None)
@@ -2106,6 +2119,7 @@ def minha_conta():
         g.user['nome'] = nome
         g.user['email'] = email
         g.user['avatar'] = new_avatar
+        session['session_version'] = user.get('session_version', 0)
 
         if password_changed:
             flash('Perfil e senha atualizados com sucesso!')
@@ -2294,6 +2308,14 @@ def usuarios_editar(user_id):
                         )
                     else:
                         cur.execute("UPDATE usuarios SET role=?, roles=?, email=? WHERE id=?", (role, serializar_roles(roles), email, user_id))
+                
+                # Se o próprio usuário editou sua conta, sincroniza a nova versão no cookie para não ser deslogado
+                if roles_changed and user_id == session.get("user_id"):
+                    cur.execute("SELECT session_version FROM usuarios WHERE id=?", (user_id,))
+                    row_ver = cur.fetchone()
+                    if row_ver:
+                        session['session_version'] = row_ver[0]
+
                 conn.commit()
                 try:
                     details = f"roles={roles};email={email};password_changed={'yes' if new_pwd else 'no'}"
