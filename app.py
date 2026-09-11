@@ -868,6 +868,36 @@ def init_db(force=False):
         """
     )
 
+    # configuracoes_cloudinary table: stores Cloudinary credentials configured via Developer Hub
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracoes_cloudinary (
+            id TEXT PRIMARY KEY,
+            cloud_name TEXT,
+            api_key TEXT,
+            api_secret TEXT,
+            ativo INTEGER DEFAULT 1,
+            updated_at TEXT
+        )
+        """
+    )
+
+    # Sincroniza variáveis de ambiente a partir do banco caso já existam configuradas
+    try:
+        cur.execute("SELECT cloud_name, api_key, api_secret FROM configuracoes_cloudinary LIMIT 1")
+        r_cld = cur.fetchone()
+        if r_cld and r_cld[0] and r_cld[1]:
+            if not os.environ.get("CLOUDINARY_CLOUD_NAME"):
+                os.environ["CLOUDINARY_CLOUD_NAME"] = r_cld[0]
+            if not os.environ.get("CLOUDINARY_API_KEY"):
+                os.environ["CLOUDINARY_API_KEY"] = r_cld[1]
+            if not os.environ.get("CLOUDINARY_API_SECRET"):
+                os.environ["CLOUDINARY_API_SECRET"] = r_cld[2] or ""
+            if not os.environ.get("CLOUDINARY_URL") and r_cld[0] and r_cld[1] and r_cld[2]:
+                os.environ["CLOUDINARY_URL"] = f"cloudinary://{r_cld[1]}:{r_cld[2]}@{r_cld[0]}"
+    except Exception:
+        pass
+
     conn.commit()
     seed_roles_se_necessario(conn)
     criar_usuario_padrao_se_necessario(conn)
@@ -1377,6 +1407,118 @@ def salvar_configuracoes_sso(cfg):
         )
         conn.commit()
         conn.close()
+
+
+def obter_configuracoes_cloudinary():
+    """Recupera as configurações de Cloudinary do SQLite ou das variáveis de ambiente."""
+    default_cfg = {
+        "cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip(),
+        "api_key": os.environ.get("CLOUDINARY_API_KEY", "").strip(),
+        "api_secret": os.environ.get("CLOUDINARY_API_SECRET", "").strip(),
+        "ativo": 1 if os.environ.get("CLOUDINARY_CLOUD_NAME") else 0,
+    }
+    if USE_SQLITE:
+        try:
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM configuracoes_cloudinary LIMIT 1")
+            r = cur.fetchone()
+            conn.close()
+            if r and (r["cloud_name"] or r["api_key"]):
+                cfg = {
+                    "cloud_name": r["cloud_name"] or "",
+                    "api_key": r["api_key"] or "",
+                    "api_secret": r["api_secret"] or "",
+                    "ativo": int(r["ativo"]) if r["ativo"] is not None else 1,
+                }
+                if cfg["cloud_name"]:
+                    os.environ["CLOUDINARY_CLOUD_NAME"] = cfg["cloud_name"]
+                if cfg["api_key"]:
+                    os.environ["CLOUDINARY_API_KEY"] = cfg["api_key"]
+                if cfg["api_secret"]:
+                    os.environ["CLOUDINARY_API_SECRET"] = cfg["api_secret"]
+                if cfg["cloud_name"] and cfg["api_key"] and cfg["api_secret"]:
+                    os.environ["CLOUDINARY_URL"] = f"cloudinary://{cfg['api_key']}:{cfg['api_secret']}@{cfg['cloud_name']}"
+                return cfg
+        except Exception:
+            pass
+    return default_cfg
+
+
+def salvar_configuracoes_cloudinary(cfg):
+    """Persiste as configurações de Cloudinary no banco de dados e atualiza o ambiente."""
+    cloud_name = cfg.get("cloud_name", "").strip()
+    api_key = cfg.get("api_key", "").strip()
+    api_secret = cfg.get("api_secret", "").strip()
+    ativo = int(cfg.get("ativo", 1))
+
+    # Atualiza em memória e os.environ imediatamente
+    os.environ["CLOUDINARY_CLOUD_NAME"] = cloud_name
+    os.environ["CLOUDINARY_API_KEY"] = api_key
+    os.environ["CLOUDINARY_API_SECRET"] = api_secret
+    if cloud_name and api_key and api_secret:
+        os.environ["CLOUDINARY_URL"] = f"cloudinary://{api_key}:{api_secret}@{cloud_name}"
+    else:
+        os.environ.pop("CLOUDINARY_URL", None)
+
+    # Reconfigura o serviço
+    cloudinary_service.reconfigurar_cloudinary(cloud_name, api_key, api_secret)
+
+    # Persiste no banco de dados
+    if USE_SQLITE:
+        init_db()
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
+        now = agora().isoformat()
+        cur.execute("DELETE FROM configuracoes_cloudinary")
+        cur.execute(
+            """
+            INSERT INTO configuracoes_cloudinary (id, cloud_name, api_key, api_secret, ativo, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("default", cloud_name, api_key, api_secret, ativo, now)
+        )
+        conn.commit()
+        conn.close()
+
+    # Tenta salvar no arquivo .env se for gravável
+    try:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+        if os.path.exists(env_path):
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            new_lines = []
+            keys_seen = set()
+            for line in lines:
+                if line.startswith("CLOUDINARY_CLOUD_NAME="):
+                    new_lines.append(f"CLOUDINARY_CLOUD_NAME={cloud_name}\n")
+                    keys_seen.add("CLOUDINARY_CLOUD_NAME")
+                elif line.startswith("CLOUDINARY_API_KEY="):
+                    new_lines.append(f"CLOUDINARY_API_KEY={api_key}\n")
+                    keys_seen.add("CLOUDINARY_API_KEY")
+                elif line.startswith("CLOUDINARY_API_SECRET="):
+                    new_lines.append(f"CLOUDINARY_API_SECRET={api_secret}\n")
+                    keys_seen.add("CLOUDINARY_API_SECRET")
+                elif line.startswith("CLOUDINARY_URL="):
+                    if cloud_name and api_key and api_secret:
+                        new_lines.append(f"CLOUDINARY_URL=cloudinary://{api_key}:{api_secret}@{cloud_name}\n")
+                    keys_seen.add("CLOUDINARY_URL")
+                else:
+                    new_lines.append(line)
+            if "CLOUDINARY_CLOUD_NAME" not in keys_seen and cloud_name:
+                new_lines.append(f"CLOUDINARY_CLOUD_NAME={cloud_name}\n")
+            if "CLOUDINARY_API_KEY" not in keys_seen and api_key:
+                new_lines.append(f"CLOUDINARY_API_KEY={api_key}\n")
+            if "CLOUDINARY_API_SECRET" not in keys_seen and api_secret:
+                new_lines.append(f"CLOUDINARY_API_SECRET={api_secret}\n")
+            if "CLOUDINARY_URL" not in keys_seen and cloud_name and api_key and api_secret:
+                new_lines.append(f"CLOUDINARY_URL=cloudinary://{api_key}:{api_secret}@{cloud_name}\n")
+            with open(env_path, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+    except Exception:
+        pass
 
 
 def seed_roles_se_necessario(conn=None):
@@ -6382,6 +6524,8 @@ def developer_dashboard():
         db_config=db_config,
         audits=audits_list,
         diagnostics=diagnostics,
+        config_cloudinary=obter_configuracoes_cloudinary(),
+        cloudinary_status=cloudinary_service.testar_conexao_cloudinary(),
     )
 
 
@@ -6414,6 +6558,64 @@ def developer_sso_salvar():
 
     flash("Configurações do Google SSO e credenciais salvas com sucesso no Developer Hub!")
     return redirect(url_for("developer_dashboard", tab="sso"))
+
+
+@app.route("/developer/cloudinary/salvar", methods=["POST"])
+@requires_developer
+def developer_cloudinary_salvar():
+    cloud_name = request.form.get("cloud_name", "").strip()
+    api_key = request.form.get("api_key", "").strip()
+    api_secret = request.form.get("api_secret", "").strip()
+    ativo = 1 if request.form.get("ativo") == "1" else 0
+
+    cfg = {
+        "cloud_name": cloud_name,
+        "api_key": api_key,
+        "api_secret": api_secret,
+        "ativo": ativo,
+    }
+    salvar_configuracoes_cloudinary(cfg)
+
+    # Test connection after save
+    status = cloudinary_service.testar_conexao_cloudinary(cloud_name, api_key, api_secret)
+
+    # Audit log
+    if USE_SQLITE:
+        try:
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO audits (id, actor_id, actor_username, target_user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), session.get("user_id"), g.user.get("username") if g.get("user") else "Developer", None, "update_cloudinary_config", f"cloud_name={cloud_name};ativo={ativo};status={status.get('ok')}", agora().isoformat())
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    if status.get("ok"):
+        flash("Configurações do Cloudinary salvas e conexão com a nuvem validada com sucesso! ✅")
+    else:
+        flash(f"Configurações salvas, mas a validação com a API retornou: {status.get('error', 'Falha')} ⚠️")
+
+    return redirect(url_for("developer_dashboard", tab="cloudinary"))
+
+
+@app.route("/developer/cloudinary/testar", methods=["POST"])
+@requires_developer
+def developer_cloudinary_testar():
+    data = request.get_json(silent=True) or {}
+    cloud_name = data.get("cloud_name", "").strip()
+    api_key = data.get("api_key", "").strip()
+    api_secret = data.get("api_secret", "").strip()
+
+    status = cloudinary_service.testar_conexao_cloudinary(cloud_name, api_key, api_secret)
+    return jsonify({
+        "success": status.get("ok", False),
+        "message": status.get("message") or status.get("error", "Erro ao conectar"),
+        "status": status.get("status", "")
+    })
 
 
 @app.route("/developer/sso/testar-gmail", methods=["POST"])

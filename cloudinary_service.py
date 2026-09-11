@@ -57,6 +57,47 @@ def _init_cloudinary():
         return False
 
 
+def reconfigurar_cloudinary(cloud_name: Optional[str] = None, api_key: Optional[str] = None, api_secret: Optional[str] = None, url: Optional[str] = None) -> bool:
+    """Permite reconfigurar o Cloudinary em tempo de execução com novas credenciais."""
+    global _configured, _cloudinary_lib
+    _configured = False
+    _cloudinary_lib = None
+    if cloud_name:
+        os.environ["CLOUDINARY_CLOUD_NAME"] = cloud_name
+    if api_key:
+        os.environ["CLOUDINARY_API_KEY"] = api_key
+    if api_secret:
+        os.environ["CLOUDINARY_API_SECRET"] = api_secret
+    if url:
+        os.environ["CLOUDINARY_URL"] = url
+    elif cloud_name and api_key and api_secret:
+        os.environ["CLOUDINARY_URL"] = f"cloudinary://{api_key}:{api_secret}@{cloud_name}"
+    return _init_cloudinary()
+
+
+def testar_conexao_cloudinary(cloud_name: Optional[str] = None, api_key: Optional[str] = None, api_secret: Optional[str] = None) -> dict:
+    """Testa a conexão e as credenciais com o Cloudinary (seja as atuais ou novas passadas)."""
+    try:
+        import cloudinary
+        import cloudinary.api
+
+        c_name = cloud_name or os.environ.get("CLOUDINARY_CLOUD_NAME", "").strip()
+        k = api_key or os.environ.get("CLOUDINARY_API_KEY", "").strip()
+        s = api_secret or os.environ.get("CLOUDINARY_API_SECRET", "").strip()
+
+        if not (c_name and k and s):
+            return {"ok": False, "error": "Credenciais incompletas. Informe Cloud Name, API Key e API Secret."}
+
+        # Configura temporariamente para o teste
+        cloudinary.config(cloud_name=c_name, api_key=k, api_secret=s, secure=True)
+        res = cloudinary.api.ping()
+        return {"ok": True, "status": res.get("status", "ok"), "message": "Conexão com Cloudinary validada com sucesso! API respondendo normalmente."}
+    except Exception as e:
+        # Restaura configuração do ambiente caso falhe
+        _init_cloudinary()
+        return {"ok": False, "error": str(e), "message": f"Falha na autenticação com o Cloudinary: {e}"}
+
+
 def is_cloudinary_configured() -> bool:
     """Verifica se o Cloudinary está devidamente configurado e pronto para uso."""
     return _init_cloudinary()

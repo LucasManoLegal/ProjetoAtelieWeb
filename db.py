@@ -65,6 +65,7 @@ TABLE_PRIMARY_KEYS = {
     "historico_envios_email": ["id"],
     "configuracoes_email": ["id"],
     "configuracoes_sso": ["id"],
+    "configuracoes_cloudinary": ["id"],
     "app_meta": ["key"],
 }
 
@@ -963,6 +964,20 @@ def init_db():
             ativo INTEGER DEFAULT 0,
             auto_cadastro INTEGER DEFAULT 1,
             papel_padrao TEXT DEFAULT 'Producao',
+            updated_at TEXT
+        )
+        """
+    )
+
+    # configuracoes_cloudinary
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracoes_cloudinary (
+            id TEXT PRIMARY KEY,
+            cloud_name TEXT,
+            api_key TEXT,
+            api_secret TEXT,
+            ativo INTEGER DEFAULT 1,
             updated_at TEXT
         )
         """
