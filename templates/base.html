@@ -55,7 +55,8 @@
       <a class="drawer-link {{ 'active' if request.path.startswith('/produtos') }}" href="{{ url_for('produtos') }}"><span class="ic">👜</span> Produtos &amp; Receitas</a>
       {% endif %}
       {% if can_access_tab('pedidos') %}
-      <a class="drawer-link {{ 'active' if request.path.startswith('/pedidos') }}" href="{{ url_for('pedidos') }}"><span class="ic">🧾</span> Pedidos dos Clientes</a>
+      <a class="drawer-link {{ 'active' if request.path.startswith('/pedidos') and not request.path.startswith('/calendario') and not request.path.startswith('/pedidos/calendario') }}" href="{{ url_for('pedidos') }}"><span class="ic">🧾</span> Pedidos dos Clientes</a>
+      <a class="drawer-link {{ 'active' if request.path.startswith('/calendario') or request.path.startswith('/pedidos/calendario') }}" href="{{ url_for('calendario_entregas') }}"><span class="ic">📅</span> Agenda de Entregas</a>
       {% endif %}
       {% if can_access_tab('sobras') %}
       <a class="drawer-link {{ 'active' if request.path.startswith('/sobras') }}" href="{{ url_for('sobras') }}"><span class="ic">♻️</span> Sobras e Reaproveitamento</a>

@@ -172,8 +172,8 @@ class OrdersAgent(BaseSpecialistAgent):
                 agent_name=self.name
             )
 
-        # ── 7. CONSULTAR PEDIDOS ──
-        if any(w in prompt_clean for w in ["consultar pedido", "ver pedidos", "listar pedidos", "pedidos pendentes", "pedidos atrasados", "quais pedidos"]):
+        # ── 7. CONSULTAR PEDIDOS / ENTREGAS / CALENDÁRIO ──
+        if any(w in prompt_clean for w in ["consultar pedido", "ver pedidos", "listar pedidos", "pedidos pendentes", "pedidos atrasados", "quais pedidos", "quando entregar", "entregas", "prazo", "prazos", "calendario", "agenda"]):
             status_filtro = None
             if "pendente" in prompt_clean: status_filtro = "Pendente"
             elif "producao" in prompt_clean: status_filtro = "Em Produção"
@@ -182,7 +182,7 @@ class OrdersAgent(BaseSpecialistAgent):
             return AgentResponse(
                 handled=True,
                 action="consultar_pedidos",
-                params={"status": status_filtro},
+                params={"status": status_filtro, "filtro": prompt},
                 confidence=0.94,
                 agent_name=self.name
             )

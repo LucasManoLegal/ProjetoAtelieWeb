@@ -719,6 +719,9 @@ def init_db():
             usou_estoque_pronto INTEGER DEFAULT 0,
             data_pedido TEXT,
             data_pedido_iso TEXT,
+            data_entrega TEXT DEFAULT '',
+            google_event_id TEXT DEFAULT '',
+            google_calendar_synced_at TEXT DEFAULT '',
             observacoes TEXT,
             created_at TEXT,
             updated_at TEXT
@@ -822,7 +825,14 @@ def init_db():
             except Exception:
                 conn.rollback()
 
-        for col, ctype in [("usou_estoque_pronto", "INTEGER DEFAULT 0")]:
+        for col, ctype in [
+            ("usou_estoque_pronto", "INTEGER DEFAULT 0"),
+            ("origem", "TEXT DEFAULT 'web'"),
+            ("telefone_cliente", "TEXT DEFAULT ''"),
+            ("data_entrega", "TEXT DEFAULT ''"),
+            ("google_event_id", "TEXT DEFAULT ''"),
+            ("google_calendar_synced_at", "TEXT DEFAULT ''"),
+        ]:
             try:
                 cur.execute(f"ALTER TABLE pedidos ADD COLUMN {col} {ctype}")
                 conn.commit()
@@ -1043,6 +1053,7 @@ def init_db():
         ("idx_pedidos_created_at", "CREATE INDEX IF NOT EXISTS idx_pedidos_created_at ON pedidos(created_at)"),
         ("idx_pedidos_cliente", "CREATE INDEX IF NOT EXISTS idx_pedidos_cliente ON pedidos(cliente)"),
         ("idx_pedidos_origem", "CREATE INDEX IF NOT EXISTS idx_pedidos_origem ON pedidos(origem)"),
+        ("idx_pedidos_data_entrega", "CREATE INDEX IF NOT EXISTS idx_pedidos_data_entrega ON pedidos(data_entrega)"),
         ("idx_produtos_nome", "CREATE INDEX IF NOT EXISTS idx_produtos_nome ON produtos(nome)"),
         ("idx_produtos_gtin", "CREATE INDEX IF NOT EXISTS idx_produtos_gtin ON produtos(gtin)"),
         ("idx_materiais_categoria", "CREATE INDEX IF NOT EXISTS idx_materiais_categoria ON materiais(categoria)"),

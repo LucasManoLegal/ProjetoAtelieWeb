@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS pedidos (
     usou_estoque_pronto INTEGER DEFAULT 0,
     data_pedido TEXT,
     data_pedido_iso TEXT,
+    data_entrega TEXT DEFAULT '',
+    google_event_id TEXT DEFAULT '',
+    google_calendar_synced_at TEXT DEFAULT '',
+    origem TEXT DEFAULT 'web',
+    telefone_cliente TEXT DEFAULT '',
     observacoes TEXT,
     created_at TEXT,
     updated_at TEXT

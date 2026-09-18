@@ -713,6 +713,21 @@ class AniaAssistant:
         valor_total = round(preco_unit * qtd, 2)
         dt_pedido = self._agora()
 
+        data_entrega = ""
+        m_dt = re.search(r"\b(?:para|dia|ate|em)\s+(\d{1,2}/\d{1,2}(?:/\d{2,4})?|\d{4}-\d{2}-\d{2})\b", prompt_orig, re.IGNORECASE)
+        if m_dt:
+            raw_dt = m_dt.group(1)
+            if "/" in raw_dt:
+                pts = raw_dt.split("/")
+                dia_str = pts[0].zfill(2)
+                mes_str = pts[1].zfill(2)
+                ano_str = pts[2] if len(pts) > 2 else str(dt_pedido.year)
+                if len(ano_str) == 2:
+                    ano_str = "20" + ano_str
+                data_entrega = f"{ano_str}-{mes_str}-{dia_str}"
+            else:
+                data_entrega = raw_dt
+
         novo_pedido = {
             "id": str(uuid.uuid4()),
             "cliente": cliente,
@@ -727,6 +742,11 @@ class AniaAssistant:
             "usou_estoque_pronto": 1 if usar_pronta else 0,
             "data_pedido": dt_pedido.strftime("%d/%m/%Y"),
             "data_pedido_iso": dt_pedido.strftime("%Y-%m-%d %H:%M:%S"),
+            "data_entrega": data_entrega,
+            "google_event_id": "",
+            "google_calendar_synced_at": "",
+            "origem": "ania",
+            "telefone_cliente": "",
             "observacoes": "Registrado via Assistente Virtual Ania",
         }
 
@@ -741,8 +761,8 @@ class AniaAssistant:
                     (str(uuid.uuid4()), "estoque_pronto", produto_alvo["nome"], qtd, "unidades", f"Atendimento de pedido de {cliente} (Ania)", dt_pedido.strftime("%d/%m/%Y %H:%M"), user.get("id"), dt_pedido.isoformat())
                 )
             cur.execute(
-                "INSERT INTO pedidos (id,cliente,produto_id,produto_nome,produto_emoji,quantidade,preco_unitario,valor_total,status,materiais_baixados,usou_estoque_pronto,data_pedido,data_pedido_iso,observacoes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (novo_pedido["id"], novo_pedido["cliente"], novo_pedido["produto_id"], novo_pedido["produto_nome"], novo_pedido["produto_emoji"], novo_pedido["quantidade"], novo_pedido["preco_unitario"], novo_pedido["valor_total"], novo_pedido["status"], novo_pedido["materiais_baixados"], novo_pedido["usou_estoque_pronto"], novo_pedido["data_pedido"], novo_pedido["data_pedido_iso"], novo_pedido["observacoes"], dt_pedido.isoformat(), dt_pedido.isoformat())
+                "INSERT INTO pedidos (id,cliente,produto_id,produto_nome,produto_emoji,quantidade,preco_unitario,valor_total,status,materiais_baixados,usou_estoque_pronto,data_pedido,data_pedido_iso,data_entrega,google_event_id,google_calendar_synced_at,origem,telefone_cliente,observacoes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (novo_pedido["id"], novo_pedido["cliente"], novo_pedido["produto_id"], novo_pedido["produto_nome"], novo_pedido["produto_emoji"], novo_pedido["quantidade"], novo_pedido["preco_unitario"], novo_pedido["valor_total"], novo_pedido["status"], novo_pedido["materiais_baixados"], novo_pedido["usou_estoque_pronto"], novo_pedido["data_pedido"], novo_pedido["data_pedido_iso"], novo_pedido["data_entrega"], novo_pedido["google_event_id"], novo_pedido["google_calendar_synced_at"], novo_pedido["origem"], novo_pedido["telefone_cliente"], novo_pedido["observacoes"], dt_pedido.isoformat(), dt_pedido.isoformat())
             )
             conn.commit()
             conn.close()
@@ -753,6 +773,12 @@ class AniaAssistant:
             lista_pedidos = self._carregar_json("pedidos.json")
             lista_pedidos.append(novo_pedido)
             self._salvar_json("pedidos.json", lista_pedidos)
+
+        if data_entrega and hasattr(self._app_module, "criar_ou_atualizar_evento_google_calendar"):
+            try:
+                self._app_module.criar_ou_atualizar_evento_google_calendar(novo_pedido, user.get("id"))
+            except Exception:
+                pass
 
         info_status = "🛍️ **Pronta-Entrega (Concluído Imediatamente)**" if usar_pronta else "⏳ **Pedido Pendente (Fabricação sob encomenda)**"
         msg = (
@@ -2465,6 +2491,28 @@ class AniaAssistant:
 
         pendentes = [p for p in pedidos if p.get("status") in ("Pendente", "Em produção")]
         concluidos = [p for p in pedidos if p.get("status") in ("Concluído", "Entregue")]
+
+        if any(w in p_clean for w in ["entrega", "entregas", "prazo", "prazos", "calendario", "agenda"]):
+            com_entrega = [p for p in pedidos if p.get("data_entrega") and p.get("status") not in ("Entregue", "Cancelado")]
+            if not com_entrega:
+                return {
+                    "reply": "📅 Não há entregas com data agendada pendentes no momento!",
+                    "voice_text": "Não há entregas agendadas no momento.",
+                    "suggestions": ["📅 Ver Agenda de Entregas", "➕ Criar novo pedido"]
+                }
+            com_entrega.sort(key=lambda x: x.get("data_entrega", ""))
+            linhas = []
+            for p in com_entrega[:6]:
+                dt = p.get('data_entrega')
+                if re.match(r"^\d{4}-\d{2}-\d{2}", dt):
+                    pts = dt.split("-")
+                    dt_fmt = f"{pts[2]}/{pts[1]}/{pts[0]}"
+                else:
+                    dt_fmt = dt
+                linhas.append(f"• **{dt_fmt}**: {p['cliente']} — {p['quantidade']}x {p.get('produto_emoji', '👜')} {p['produto_nome']} (`{p['status']}`)")
+            msg = f"📅 **Próximas Entregas Agendadas ({len(com_entrega)}):**\n\n" + "\n".join(linhas)
+            voice = f"Temos {len(com_entrega)} entregas com data agendada no ateliê."
+            return {"reply": msg, "voice_text": voice, "suggestions": ["📅 Abrir Calendário", "Ver pedidos pendentes"]}
 
         if "pendente" in p_clean or "aberto" in p_clean or "producao" in p_clean:
             if not pendentes:

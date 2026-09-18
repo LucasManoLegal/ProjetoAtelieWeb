@@ -29,6 +29,7 @@
 {% endif %}
 {% if can_access_tab('pedidos') %}
 <a href="{{ url_for('pedidos') }}" class="btn-secondary" style="margin-bottom:12px;">🧾 Pedidos dos Clientes</a>
+<a href="{{ url_for('calendario_entregas') }}" class="btn-secondary" style="margin-bottom:12px;">📅 Agenda de Entregas</a>
 {% endif %}
 {% if can_access_tab('financeiro') %}
 <a href="{{ url_for('financeiro') }}" class="btn-secondary" style="margin-bottom:12px;">💰 Financeiro</a>

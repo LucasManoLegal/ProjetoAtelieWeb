@@ -1,0 +1,483 @@
+{% extends "base.html" %}
+{% set titulo_pagina = "Agenda de Entregas" %}
+{% set subtitulo = "Acompanhamento de prazos e integração com o Google Calendar" %}
+{% block conteudo %}
+
+<!-- Barra Superior de Ações e Sincronização -->
+<div style="display:flex; gap:10px; margin-bottom:18px; flex-wrap:wrap; align-items:center; justify-content:space-between;">
+  <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    <a href="{{ url_for('pedidos') }}" class="btn-ghost" style="padding:9px 14px; font-size:14px; display:inline-flex; align-items:center; gap:6px;">
+      ← Ver Lista de Pedidos
+    </a>
+    <a href="{{ url_for('pedido_novo') }}" class="btn-primary" style="padding:9px 16px; font-size:14px; display:inline-flex; align-items:center; gap:6px;">
+      ➕ Novo Pedido
+    </a>
+  </div>
+
+  <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+    <form method="post" action="{{ url_for('pedidos_sync_calendar_todos') }}" style="margin:0;">
+      <button type="submit" class="btn-secondary" style="padding:9px 14px; font-size:13.5px; display:inline-flex; align-items:center; gap:6px;" title="Sincronizar todos os pedidos ativos com o Google Calendar">
+        🔄 Sincronizar Tudo no Google Agenda
+      </button>
+    </form>
+    <a href="https://calendar.google.com/" target="_blank" class="btn-ghost" style="padding:9px 14px; font-size:13.5px; display:inline-flex; align-items:center; gap:6px; color:#1d4ed8; border:1px solid rgba(66,133,244,0.3); background:rgba(66,133,244,0.06);" title="Abrir o Google Agenda na web">
+      📅 Abrir Google Agenda ↗
+    </a>
+  </div>
+</div>
+
+<!-- Banner de Conexão com o Google Calendar -->
+<div class="card" style="padding:14px 18px; margin-bottom:20px; border-left:4px solid {% if google_cal_info.conectado %}#22c55e{% else %}#f59e0b{% endif %}; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+  <div style="display:flex; align-items:center; gap:12px;">
+    <div style="width:40px; height:40px; border-radius:10px; background:{% if google_cal_info.conectado %}rgba(34,197,94,0.12){% else %}rgba(245,158,11,0.12){% endif %}; display:flex; align-items:center; justify-content:center; font-size:20px; flex-shrink:0;">
+      {% if google_cal_info.conectado %}🗓️{% else %}⚠️{% endif %}
+    </div>
+    <div>
+      {% if google_cal_info.conectado %}
+        <div style="font-weight:700; color:var(--text); font-size:14.5px;">
+          Google Calendar Conectado
+          <span style="display:inline-block; margin-left:6px; background:#dcfce7; color:#15803d; border:1px solid #86efac; font-size:11px; padding:1px 7px; border-radius:12px; font-weight:700;">🟢 Ativo</span>
+        </div>
+        <p class="font-crimson" style="margin:2px 0 0 0; font-size:13.5px; color:var(--muted); font-style:italic;">
+          Sincronizando entregas diretamente na agenda de <strong>{{ google_cal_info.email or 'sua conta Google' }}</strong>.
+        </p>
+      {% else %}
+        <div style="font-weight:700; color:var(--text); font-size:14.5px;">
+          Google Calendar Desconectado
+          <span style="display:inline-block; margin-left:6px; background:#fef3c7; color:#b45309; border:1px solid #fde68a; font-size:11px; padding:1px 7px; border-radius:12px; font-weight:700;">⚪ Não Conectado</span>
+        </div>
+        <p class="font-crimson" style="margin:2px 0 0 0; font-size:13.5px; color:var(--muted); font-style:italic;">
+          {{ google_cal_info.motivo or 'Faça login com sua conta Google para sincronizar as datas de entrega automaticamente.' }}
+        </p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div>
+    {% if not google_cal_info.conectado %}
+      <a href="{{ url_for('auth_google_login', next=url_for('calendario_entregas')) }}" class="btn-primary" style="padding:8px 14px; font-size:13.5px; display:inline-flex; align-items:center; gap:6px;">
+        🔑 Conectar Conta Google
+      </a>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Métricas e Contadores Rápidos -->
+<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:14px; margin-bottom:24px;">
+  <!-- Atrasados -->
+  <div class="card" style="padding:16px; text-align:center; border-top:3px solid {% if total_atrasados > 0 %}var(--danger){% else %}var(--border){% endif %};">
+    <p class="font-serif" style="font-size:28px; font-weight:800; color:{% if total_atrasados > 0 %}var(--danger){% else %}var(--muted){% endif %}; margin:0;">
+      {{ total_atrasados }}
+    </p>
+    <p class="font-crimson" style="font-size:13.5px; color:var(--muted); font-style:italic; margin:4px 0 0 0;">
+      🚨 Entregas Atrasadas
+    </p>
+  </div>
+
+  <!-- Hoje -->
+  <div class="card" style="padding:16px; text-align:center; border-top:3px solid {% if total_hoje > 0 %}#2563eb{% else %}var(--border){% endif %};">
+    <p class="font-serif" style="font-size:28px; font-weight:800; color:{% if total_hoje > 0 %}#2563eb{% else %}var(--primary){% endif %}; margin:0;">
+      {{ total_hoje }}
+    </p>
+    <p class="font-crimson" style="font-size:13.5px; color:var(--muted); font-style:italic; margin:4px 0 0 0;">
+      🎯 Para Entregar Hoje
+    </p>
+  </div>
+
+  <!-- Próximos 7 Dias -->
+  <div class="card" style="padding:16px; text-align:center; border-top:3px solid #d97706;">
+    <p class="font-serif" style="font-size:28px; font-weight:800; color:#d97706; margin:0;">
+      {{ total_semana }}
+    </p>
+    <p class="font-crimson" style="font-size:13.5px; color:var(--muted); font-style:italic; margin:4px 0 0 0;">
+      📆 Próximos 7 Dias
+    </p>
+  </div>
+
+  <!-- Total Agendadas -->
+  <div class="card" style="padding:16px; text-align:center; border-top:3px solid var(--primary);">
+    <p class="font-serif" style="font-size:28px; font-weight:800; color:var(--primary); margin:0;">
+      {{ total_agendados }}
+    </p>
+    <p class="font-crimson" style="font-size:13.5px; color:var(--muted); font-style:italic; margin:4px 0 0 0;">
+      📦 Total com Prazo Ativo
+    </p>
+  </div>
+</div>
+
+<!-- Layout Principal: Calendário Mensal + Painel Lateral -->
+<div style="display:grid; grid-template-columns: 1fr; gap:24px;">
+
+  <!-- Card do Calendário Mensal -->
+  <div class="card" style="padding:20px;">
+    
+    <!-- Navegador de Mês -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <a href="{{ url_for('calendario_entregas', mes=mes_ant) }}" class="btn-ghost" style="padding:6px 12px; font-size:15px; font-weight:700;" title="Mês anterior">
+          ‹
+        </a>
+        <h2 class="font-serif" style="margin:0; font-size:22px; color:var(--primary); font-weight:700;">
+          {{ nome_mes }}
+        </h2>
+        <a href="{{ url_for('calendario_entregas', mes=mes_prox) }}" class="btn-ghost" style="padding:6px 12px; font-size:15px; font-weight:700;" title="Próximo mês">
+          ›
+        </a>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <a href="{{ url_for('calendario_entregas') }}" class="btn-ghost" style="font-size:13px; padding:6px 12px; border-radius:8px;">
+          📍 Mês Atual
+        </a>
+      </div>
+    </div>
+
+    <!-- Cabeçalho dos Dias da Semana -->
+    <div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:6px; text-align:center; margin-bottom:8px;">
+      <div style="font-weight:700; font-size:12.5px; color:var(--danger); padding:6px 0;">DOM</div>
+      <div style="font-weight:700; font-size:12.5px; color:var(--muted); padding:6px 0;">SEG</div>
+      <div style="font-weight:700; font-size:12.5px; color:var(--muted); padding:6px 0;">TER</div>
+      <div style="font-weight:700; font-size:12.5px; color:var(--muted); padding:6px 0;">QUA</div>
+      <div style="font-weight:700; font-size:12.5px; color:var(--muted); padding:6px 0;">QUI</div>
+      <div style="font-weight:700; font-size:12.5px; color:var(--muted); padding:6px 0;">SEX</div>
+      <div style="font-weight:700; font-size:12.5px; color:var(--muted); padding:6px 0;">SÁB</div>
+    </div>
+
+    <!-- Grade dos Dias do Mês -->
+    <div style="display:grid; grid-template-columns:repeat(7, 1fr); gap:6px;">
+      {% for d in dias_grade %}
+      {% set tem_pedidos = d.pedidos|length > 0 %}
+      <div class="cal-day-cell {% if d.e_hoje %}cal-day-today{% endif %} {% if not d.mesmo_mes %}cal-day-other-month{% endif %}"
+           onclick="abrirDiaModal('{{ d.data_iso }}', '{{ d.dia }}/{{ '%02d' % d.mes }}/{{ d.ano }}', {{ d.pedidos|tojson }})"
+           style="min-height:90px; border-radius:10px; padding:6px 8px; border:1px solid {% if d.e_hoje %}var(--primary){% elif tem_pedidos %}rgba(217, 119, 6, 0.4){% else %}var(--border){% endif %}; background:{% if d.e_hoje %}rgba(139, 44, 44, 0.04){% elif tem_pedidos %}rgba(254, 243, 199, 0.25){% elif not d.mesmo_mes %}rgba(0,0,0,0.02){% else %}var(--card){% endif %}; cursor:pointer; transition:all 0.2s ease; display:flex; flex-direction:column;">
+        
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+          <span style="font-size:13px; font-weight:{% if d.e_hoje or tem_pedidos %}800{% else %}500{% endif %}; color:{% if d.e_hoje %}var(--primary){% elif not d.mesmo_mes %}var(--muted){% else %}var(--text){% endif %};">
+            {{ d.dia }}
+          </span>
+          {% if d.e_hoje %}
+          <span style="background:var(--primary); color:white; font-size:9.5px; font-weight:800; padding:1px 5px; border-radius:6px;">
+            HOJE
+          </span>
+          {% elif tem_pedidos %}
+          <span style="background:rgba(217,119,6,0.2); color:#b45309; font-size:10px; font-weight:800; padding:1px 5px; border-radius:6px;">
+            {{ d.pedidos|length }}
+          </span>
+          {% endif %}
+        </div>
+
+        <!-- Mini Pílulas de Pedidos -->
+        <div style="display:flex; flex-direction:column; gap:3px; overflow:hidden; flex:1;">
+          {% for ped in d.pedidos[:3] %}
+          <div style="font-size:11px; padding:2px 5px; border-radius:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                      background:{% if ped.status == 'Entregue' %}#f3e8ff; color:#6b21a8; border:1px solid #d8b4fe;
+                                 {% elif ped.status == 'Concluído' %}#dcfce7; color:#15803d; border:1px solid #86efac;
+                                 {% elif ped.status == 'Em produção' %}#dbeafe; color:#1d4ed8; border:1px solid #93c5fd;
+                                 {% elif ped.status == 'Cancelado' %}#fee2e2; color:#991b1b; border:1px solid #fca5a5;
+                                 {% else %}#fef3c7; color:#b45309; border:1px solid #fde68a;{% endif %};"
+               title="{{ ped.cliente }} - {{ ped.produto_nome }} ({{ ped.status }})">
+            {{ ped.produto_emoji }} <strong>{{ ped.cliente.split()[0] }}</strong>
+          </div>
+          {% endfor %}
+          {% if d.pedidos|length > 3 %}
+          <div style="font-size:10px; color:var(--muted); font-weight:700; text-align:center; padding:1px;">
+            +{{ d.pedidos|length - 3 }} mais
+          </div>
+          {% endif %}
+        </div>
+
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Legenda de Cores -->
+    <div style="display:flex; gap:12px; margin-top:16px; flex-wrap:wrap; font-size:12px; justify-content:center; color:var(--muted);">
+      <div style="display:inline-flex; align-items:center; gap:5px;">
+        <span style="width:10px; height:10px; border-radius:50%; background:#f59e0b;"></span> Pendente
+      </div>
+      <div style="display:inline-flex; align-items:center; gap:5px;">
+        <span style="width:10px; height:10px; border-radius:50%; background:#3b82f6;"></span> Em produção
+      </div>
+      <div style="display:inline-flex; align-items:center; gap:5px;">
+        <span style="width:10px; height:10px; border-radius:50%; background:#22c55e;"></span> Concluído
+      </div>
+      <div style="display:inline-flex; align-items:center; gap:5px;">
+        <span style="width:10px; height:10px; border-radius:50%; background:#a855f7;"></span> Entregue
+      </div>
+      <div style="display:inline-flex; align-items:center; gap:5px;">
+        <span style="width:10px; height:10px; border-radius:50%; background:#ef4444;"></span> Cancelado
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Próximas Entregas (Linha do Tempo Cronológica) -->
+  <div class="card" style="padding:22px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+      <div>
+        <h3 class="font-serif" style="margin:0; font-size:20px; color:var(--primary); font-weight:700;">
+          📋 Próximas Entregas Programadas
+        </h3>
+        <p class="font-crimson" style="margin:2px 0 0 0; color:var(--muted); font-style:italic; font-size:14px;">
+          Todos os pedidos com prazo de entrega acordado
+        </p>
+      </div>
+
+      <span class="tag" style="background:var(--accent-lt); color:var(--primary); border:1px solid var(--accent); font-size:13px; padding:4px 10px;">
+        {{ pedidos_com_entrega|length }} agendamento(s)
+      </span>
+    </div>
+
+    {% if not pedidos_com_entrega %}
+    <div style="text-align:center; padding:30px 15px; color:var(--muted);">
+      <p style="font-size:36px; margin:0;">📅</p>
+      <p class="font-crimson" style="font-style:italic; font-size:15px; margin:8px 0 12px 0;">
+        Nenhum pedido com data de entrega programada no momento.
+      </p>
+      <a href="{{ url_for('pedidos') }}" class="btn-secondary" style="font-size:13.5px;">
+        Ver Pedidos sem Prazo Definido ({{ pedidos_sem_entrega|length }})
+      </a>
+    </div>
+    {% else %}
+
+    <div style="display:flex; flex-direction:column; gap:12px;">
+      {% for p in pedidos_com_entrega %}
+      {% set is_past = p.data_entrega < hoje_iso and p.status not in ('Entregue', 'Cancelado') %}
+      {% set is_today = p.data_entrega == hoje_iso and p.status not in ('Entregue', 'Cancelado') %}
+      <div style="display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border-radius:12px; border:1.5px solid {% if is_past %}var(--danger){% elif is_today %}#2563eb{% else %}var(--border){% endif %}; background:{% if is_past %}rgba(239, 68, 68, 0.04){% elif is_today %}rgba(37, 99, 235, 0.04){% else %}var(--card){% endif %}; flex-wrap:wrap;">
+        
+        <!-- Emoji do Produto -->
+        <div style="width:48px; height:48px; border-radius:10px; background:var(--accent-lt); border:1px solid var(--border); display:flex; align-items:center; justify-content:center; font-size:24px; flex-shrink:0;">
+          {{ p.produto_emoji }}
+        </div>
+
+        <!-- Informações do Pedido -->
+        <div style="flex:1; min-width:200px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span class="font-serif" style="font-weight:700; font-size:16px; color:var(--text);">{{ p.cliente }}</span>
+            <span class="tag {{ status_badge.get(p.status, '') }}" style="font-size:11px; padding:1px 7px;">{{ p.status }}</span>
+            {% if is_past %}
+            <span style="background:#fee2e2; color:#b91c1c; border:1px solid #fca5a5; font-size:11px; font-weight:800; padding:1px 6px; border-radius:6px;">
+              🚨 ATRASADO
+            </span>
+            {% elif is_today %}
+            <span style="background:#dbeafe; color:#1d4ed8; border:1px solid #93c5fd; font-size:11px; font-weight:800; padding:1px 6px; border-radius:6px;">
+              🎯 ENTREGA HOJE
+            </span>
+            {% endif %}
+          </div>
+
+          <p class="font-crimson" style="margin:2px 0 0 0; font-size:14px; color:var(--muted); font-style:italic;">
+            {{ p.quantidade }}x {{ p.produto_nome }} · Total: <strong>{{ p.valor_total|moeda }}</strong>
+          </p>
+
+          {% if p.observacoes %}
+          <p class="font-crimson" style="margin:3px 0 0 0; font-size:13px; color:var(--muted); font-style:italic;">
+            "{{ p.observacoes }}"
+          </p>
+          {% endif %}
+        </div>
+
+        <!-- Bloco de Data e Ações Rápidas -->
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex-shrink:0;">
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span style="font-size:14.5px; font-weight:800; color:{% if is_past %}var(--danger){% elif is_today %}#2563eb{% else %}var(--primary){% endif %};">
+              📅 {{ p.data_entrega|data_br }}
+            </span>
+            <button type="button" onclick="abrirModalEdicaoData('{{ p.id }}', '{{ p.cliente }}', '{{ p.data_entrega }}')" class="btn-ghost" style="padding:2px 6px; font-size:11px; border:1px dashed var(--border);" title="Alterar data de entrega">
+              ✏️
+            </button>
+          </div>
+
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            {% if p.google_event_id %}
+              <a href="https://calendar.google.com/" target="_blank" style="background:rgba(66, 133, 244, 0.1); color:#1d4ed8; border:1px solid rgba(66, 133, 244, 0.3); font-size:11.5px; font-weight:700; padding:2px 7px; border-radius:6px; text-decoration:none; display:inline-flex; align-items:center; gap:3px;" title="Sincronizado no Google Calendar. Clique para abrir a agenda.">
+                🗓️ Sincronizado ✓
+              </a>
+            {% else %}
+              <form method="post" action="{{ url_for('pedido_sync_calendar', pedido_id=p.id) }}" style="margin:0;">
+                <button type="submit" class="btn-ghost" style="font-size:11.5px; padding:2px 8px; border-radius:6px; border:1px solid rgba(66, 133, 244, 0.4); color:#1d4ed8; background:rgba(66, 133, 244, 0.06);" title="Sincronizar este pedido com o Google Calendar">
+                  🔄 Sincronizar
+                </button>
+              </form>
+            {% endif %}
+
+            {% if p.telefone_cliente %}
+              <a href="https://wa.me/{{ p.telefone_cliente|replace('+', '')|replace(' ', '')|replace('-', '') }}" target="_blank" class="btn-ghost" style="font-size:11.5px; padding:2px 8px; border-radius:6px; border:1px solid rgba(37, 211, 102, 0.4); color:#15803d; background:rgba(37, 211, 102, 0.08); text-decoration:none;" title="Conversar no WhatsApp">
+                💬 WhatsApp
+              </a>
+            {% endif %}
+          </div>
+        </div>
+
+      </div>
+      {% endfor %}
+    </div>
+
+    {% endif %}
+
+    <!-- Pedidos sem prazo definido -->
+    {% if pedidos_sem_entrega %}
+    <div style="margin-top:24px; padding-top:16px; border-top:1px dashed var(--border);">
+      <h4 class="font-serif" style="margin:0 0 10px 0; font-size:16px; color:var(--primary); font-weight:700;">
+        ⏳ Pedidos Ativos sem Data de Entrega ({{ pedidos_sem_entrega|length }})
+      </h4>
+      <div style="display:flex; flex-wrap:wrap; gap:8px;">
+        {% for sem in pedidos_sem_entrega %}
+        <div style="padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:var(--accent-lt); font-size:13px; display:inline-flex; align-items:center; gap:8px;">
+          <span>{{ sem.produto_emoji }} <strong>{{ sem.cliente }}</strong> ({{ sem.produto_nome }})</span>
+          <button type="button" onclick="abrirModalEdicaoData('{{ sem.id }}', '{{ sem.cliente }}', '')" class="btn-ghost" style="padding:2px 6px; font-size:11px; border:1px dashed var(--border); font-weight:700;">
+            ➕ Definir Data
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+  </div>
+
+</div>
+
+<!-- Modal de Detalhes do Dia Selecionado -->
+<div id="modal_dia" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:16px; backdrop-filter:blur(3px);">
+  <div class="card" style="max-width:500px; width:100%; max-height:85vh; overflow-y:auto; padding:22px; border-radius:16px; box-shadow:0 15px 35px rgba(0,0,0,0.3); animation:fadeIn 0.2s ease;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; border-bottom:1px solid var(--border); padding-bottom:10px;">
+      <div>
+        <h3 class="font-serif" id="modal_dia_titulo" style="margin:0; font-size:20px; color:var(--primary); font-weight:700;">
+          Entregas do Dia
+        </h3>
+        <p class="font-crimson" id="modal_dia_subtitulo" style="margin:2px 0 0 0; color:var(--muted); font-style:italic; font-size:14px;"></p>
+      </div>
+      <button type="button" onclick="fecharModalDia()" style="background:none; border:none; font-size:22px; cursor:pointer; color:var(--muted);">&times;</button>
+    </div>
+
+    <div id="modal_dia_conteudo" style="display:flex; flex-direction:column; gap:10px;">
+      <!-- Preenchido via JavaScript -->
+    </div>
+
+    <div style="margin-top:16px; text-align:right;">
+      <button type="button" onclick="fecharModalDia()" class="btn-secondary" style="padding:8px 16px;">
+        Fechar
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal de Edição Rápida da Data de Entrega -->
+<div id="modal_editar_data" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:16px; backdrop-filter:blur(3px);">
+  <div class="card" style="max-width:420px; width:100%; padding:22px; border-radius:16px; box-shadow:0 15px 35px rgba(0,0,0,0.3);">
+    <h3 class="font-serif" style="margin:0 0 4px 0; font-size:19px; color:var(--primary); font-weight:700;">
+      📅 Definir Data de Entrega
+    </h3>
+    <p class="font-crimson" id="edit_modal_cliente" style="margin:0 0 16px 0; color:var(--muted); font-style:italic; font-size:14px;"></p>
+
+    <form method="post" id="form_editar_data" action="">
+      <div style="margin-bottom:16px;">
+        <label for="input_nova_data" style="display:block; font-weight:700; font-size:13.5px; color:var(--text); margin-bottom:6px;">
+          Data Agendada:
+        </label>
+        <input type="date" name="data_entrega" id="input_nova_data" class="input-vintage" style="font-size:16px !important; padding:12px;" required>
+        <p class="font-crimson" style="font-size:12.5px; color:var(--muted); font-style:italic; margin:4px 0 0 0;">
+          Ao salvar, a data será sincronizada com o Google Calendar se a conta estiver conectada.
+        </p>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" onclick="fecharModalEdicaoData()" class="btn-ghost" style="padding:9px 14px;">
+          Cancelar
+        </button>
+        <button type="submit" class="btn-primary" style="padding:9px 16px;">
+          💾 Salvar Data
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function abrirDiaModal(dataIso, dataFormatada, pedidos) {
+  const modal = document.getElementById('modal_dia');
+  const titulo = document.getElementById('modal_dia_titulo');
+  const subtitulo = document.getElementById('modal_dia_subtitulo');
+  const conteudo = document.getElementById('modal_dia_conteudo');
+
+  titulo.textContent = '📅 ' + dataFormatada;
+  subtitulo.textContent = (pedidos ? pedidos.length : 0) + ' entrega(s) agendada(s) para este dia';
+
+  if (!pedidos || pedidos.length === 0) {
+    conteudo.innerHTML = `
+      <div style="text-align:center; padding:20px; color:var(--muted);">
+        <p class="font-crimson" style="font-style:italic; margin:0;">Nenhuma entrega agendada para esta data.</p>
+      </div>
+    `;
+  } else {
+    let html = '';
+    pedidos.forEach(p => {
+      const waLink = p.telefone_cliente ? `https://wa.me/${p.telefone_cliente.replace(/\D/g, '')}` : '';
+      html += `
+        <div style="padding:12px; border-radius:10px; border:1px solid var(--border); background:var(--accent-lt);">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span style="font-weight:700; font-size:15px; color:var(--text);">${p.cliente}</span>
+            <span style="font-size:12px; font-weight:700; padding:2px 7px; border-radius:6px; background:rgba(0,0,0,0.05);">${p.status}</span>
+          </div>
+          <p class="font-crimson" style="margin:3px 0; font-size:13.5px; color:var(--muted); font-style:italic;">
+            ${p.produto_emoji || '👜'} ${p.quantidade}x ${p.produto_nome} · R$ ${(p.valor_total || 0).toFixed(2).replace('.', ',')}
+          </p>
+          ${p.observacoes ? `<p class="font-crimson" style="margin:2px 0 0; font-size:12.5px; color:var(--muted); font-style:italic;">"${p.observacoes}"</p>` : ''}
+          <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
+            ${waLink ? `<a href="${waLink}" target="_blank" class="btn-ghost" style="font-size:11.5px; padding:3px 8px; text-decoration:none; color:#15803d; border:1px solid rgba(37,211,102,0.4); background:rgba(37,211,102,0.08);">💬 WhatsApp</a>` : ''}
+            <button type="button" onclick="fecharModalDia(); abrirModalEdicaoData('${p.id}', '${p.cliente}', '${p.data_entrega || ''}')" class="btn-ghost" style="font-size:11.5px; padding:3px 8px;">✏️ Alterar Data</button>
+          </div>
+        </div>
+      `;
+    });
+    conteudo.innerHTML = html;
+  }
+
+  modal.style.display = 'flex';
+}
+
+function fecharModalDia() {
+  document.getElementById('modal_dia').style.display = 'none';
+}
+
+function abrirModalEdicaoData(pedidoId, cliente, dataAtual) {
+  const modal = document.getElementById('modal_editar_data');
+  const form = document.getElementById('form_editar_data');
+  const lblCliente = document.getElementById('edit_modal_cliente');
+  const input = document.getElementById('input_nova_data');
+
+  form.action = '/pedidos/' + pedidoId + '/data-entrega';
+  lblCliente.textContent = 'Pedido do(a) cliente: ' + cliente;
+  input.value = dataAtual || '';
+
+  modal.style.display = 'flex';
+}
+
+function fecharModalEdicaoData() {
+  document.getElementById('modal_editar_data').style.display = 'none';
+}
+
+// Fechar modais ao clicar fora
+window.addEventListener('click', function(e) {
+  const m1 = document.getElementById('modal_dia');
+  const m2 = document.getElementById('modal_editar_data');
+  if (e.target === m1) fecharModalDia();
+  if (e.target === m2) fecharModalEdicaoData();
+});
+</script>
+<style>
+.cal-day-cell:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.07);
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+</style>
+{% endblock %}

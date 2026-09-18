@@ -70,7 +70,7 @@
   <!-- Barra de Navegação Interna do Developer Hub -->
   <div style="display: flex; gap: 6px; flex-wrap: wrap; background: rgba(0,0,0,0.03); padding: 6px; border-radius: 12px; border: 1px solid var(--border); margin-top: 18px;">
     <button type="button" onclick="switchDevTab('sso')" id="tabbtn_sso" class="btn-ghost devtab-btn {{ 'active-subtab' if aba_ativa == 'sso' }}" style="padding: 8px 16px; font-size: 14.5px; border-radius: 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
-      🔑 SSO &amp; Google Cloud (Gmail API)
+      🔑 SSO &amp; Google Cloud (Gmail &amp; Calendar API)
     </button>
     <button type="button" onclick="switchDevTab('cloudinary')" id="tabbtn_cloudinary" class="btn-ghost devtab-btn {{ 'active-subtab' if aba_ativa == 'cloudinary' }}" style="padding: 8px 16px; font-size: 14.5px; border-radius: 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
       ☁️ Cloudinary (Imagens na Nuvem)
@@ -194,21 +194,36 @@
         </div>
       </div>
 
-      <!-- Teste de Disparo Técnico -->
+      <!-- Teste de Disparo Técnico Gmail -->
       <div class="card" style="padding: 22px;">
         <h4 class="font-serif" style="margin: 0 0 6px 0; color: var(--primary); font-size: 18px;">
           🧪 Teste de Conexão Gmail REST API
         </h4>
         <p class="font-crimson" style="margin: 0 0 12px 0; font-size: 14px; color: var(--muted);">
-          Executa um disparo de diagnóstico com relatório anexo para validar o token OAuth2 e permissões da API.
+          Executa um disparo de diagnóstico com relatório anexo para validar o token OAuth2 e permissões da API de e-mails.
         </p>
         <form method="post" action="{{ url_for('developer_sso_testar_gmail') }}">
           <div style="display: flex; gap: 8px; flex-wrap: wrap;">
             <input type="email" name="email_teste" required value="{{ g.user.get('email') or '' }}" placeholder="dev.teste@exemplo.com" class="input-vintage" style="flex: 1; min-width: 200px;">
             <button type="submit" class="btn-secondary" style="white-space: nowrap; padding: 10px 16px;">
-              🚀 Executar Teste
+              🚀 Executar Teste Gmail
             </button>
           </div>
+        </form>
+      </div>
+
+      <!-- Teste de Conexão Google Calendar API -->
+      <div class="card" style="padding: 22px;">
+        <h4 class="font-serif" style="margin: 0 0 6px 0; color: var(--primary); font-size: 18px;">
+          📅 Teste de Conexão Google Calendar API
+        </h4>
+        <p class="font-crimson" style="margin: 0 0 12px 0; font-size: 14px; color: var(--muted);">
+          Valida a permissão do escopo <code>calendar.events</code> e agenda um evento de diagnóstico na agenda do Google.
+        </p>
+        <form method="post" action="{{ url_for('developer_sso_testar_calendar') }}">
+          <button type="submit" class="btn-secondary" style="white-space: nowrap; padding: 10px 16px; display: inline-flex; align-items: center; gap: 6px;">
+            🗓️ Testar Google Calendar
+          </button>
         </form>
       </div>
     </div>

@@ -20,6 +20,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import subprocess
 import sys
+import calendar
 
 app = Flask(__name__)
 # Use environment variable for the secret key in production
@@ -168,6 +169,19 @@ def parse_float_ptbr(valor_str, default=0.0):
 @app.template_filter("moeda")
 def filtro_moeda(valor):
     return "R$ " + formatar_reais(valor)
+
+
+@app.template_filter("data_br")
+def filtro_data_br(val):
+    if not val:
+        return ""
+    val_str = str(val).strip()
+    if re.match(r"^\d{2}/\d{2}/\d{4}", val_str):
+        return val_str
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", val_str)
+    if m:
+        return f"{m.group(3)}/{m.group(2)}/{m.group(1)}"
+    return val_str
 
 
 # ── Categorias consistentes e sincronizadas ───────────────────────────────────
@@ -623,6 +637,11 @@ def init_db(force=False):
             usou_estoque_pronto INTEGER DEFAULT 0,
             data_pedido TEXT,
             data_pedido_iso TEXT,
+            data_entrega TEXT DEFAULT '',
+            google_event_id TEXT DEFAULT '',
+            google_calendar_synced_at TEXT DEFAULT '',
+            origem TEXT DEFAULT 'web',
+            telefone_cliente TEXT DEFAULT '',
             observacoes TEXT,
             created_at TEXT,
             updated_at TEXT
@@ -719,7 +738,14 @@ def init_db(force=False):
             except Exception:
                 pass
 
-        for col, ctype in [('usou_estoque_pronto', 'INTEGER DEFAULT 0')]:
+        for col, ctype in [
+            ('usou_estoque_pronto', 'INTEGER DEFAULT 0'),
+            ('origem', "TEXT DEFAULT 'web'"),
+            ('telefone_cliente', "TEXT DEFAULT ''"),
+            ('data_entrega', "TEXT DEFAULT ''"),
+            ('google_event_id', "TEXT DEFAULT ''"),
+            ('google_calendar_synced_at', "TEXT DEFAULT ''")
+        ]:
             try:
                 cur.execute(f"ALTER TABLE pedidos ADD COLUMN {col} {ctype}")
             except Exception:
@@ -925,7 +951,19 @@ def init_db(force=False):
     except Exception:
         pass
     try:
-        cur.execute("ALTER TABLE pedidos ADD COLUMN telefone_cliente TEXT DEFAULT ''")
+        cur.execute("ALTER TABLE pedidos ADD COLUMN data_entrega TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE pedidos ADD COLUMN google_event_id TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE pedidos ADD COLUMN google_calendar_synced_at TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_pedidos_data_entrega ON pedidos(data_entrega)")
     except Exception:
         pass
 
@@ -1398,6 +1436,276 @@ def obter_access_token_gmail_usuario(user_id_ou_dict):
             return {"success": False, "reason": f"refresh_failed: {token_resp.text}", "email": email, "nome": nome}
     except Exception as e:
         return {"success": False, "reason": str(e), "email": email, "nome": nome}
+
+
+# ── Google Calendar API Integration ──────────────────────────────────────────
+
+def obter_access_token_google_usuario(user_id_ou_dict=None):
+    """
+    Recupera um access_token válido para as APIs Google (Gmail e Calendar).
+    Se o usuário atual não possuir token, busca o primeiro usuário do sistema
+    (preferencialmente Admin/Developer) que possui Google conectado.
+    Renova automaticamente o token caso expirado.
+    """
+    user = None
+    if user_id_ou_dict:
+        if isinstance(user_id_ou_dict, dict):
+            user = user_id_ou_dict
+        else:
+            user = encontrar_usuario_por_id(user_id_ou_dict)
+    elif g.get("user"):
+        user = g.user
+    elif session.get("user_id"):
+        user = encontrar_usuario_por_id(session.get("user_id"))
+
+    # Fallback: primeiro usuário com google_refresh_token configurado
+    if not user or not (user.get("google_refresh_token") or user.get("google_access_token")):
+        if USE_SQLITE:
+            try:
+                init_db()
+                conn = sqlite3.connect(DB_PATH)
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM usuarios WHERE google_refresh_token IS NOT NULL AND google_refresh_token != '' ORDER BY created_at ASC LIMIT 1")
+                r = cur.fetchone()
+                conn.close()
+                if r:
+                    user = dict(r)
+            except Exception:
+                pass
+        else:
+            for u in carregar_json("usuarios.json"):
+                if u.get("google_refresh_token"):
+                    user = u
+                    break
+
+    if not user:
+        return {"success": False, "reason": "no_google_user_found"}
+
+    return obter_access_token_gmail_usuario(user)
+
+
+def _atualizar_pedido_sync_calendar(pedido_id, google_event_id, sync_time_iso):
+    """Atualiza o google_event_id e timestamp de sincronização no pedido."""
+    if not pedido_id:
+        return
+    if USE_SQLITE:
+        try:
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE pedidos SET google_event_id=?, google_calendar_synced_at=? WHERE id=?",
+                (google_event_id, sync_time_iso, pedido_id)
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+    else:
+        pedidos = carregar_json("pedidos.json")
+        for p in pedidos:
+            if p.get("id") == pedido_id:
+                p["google_event_id"] = google_event_id
+                p["google_calendar_synced_at"] = sync_time_iso
+                break
+        salvar_json("pedidos.json", pedidos)
+
+
+def criar_ou_atualizar_evento_google_calendar(pedido, user_id=None):
+    """
+    Cria ou atualiza um evento na agenda primária do Google Calendar referente à data de entrega do pedido.
+    """
+    if not pedido or not pedido.get("data_entrega"):
+        return {"success": False, "reason": "missing_delivery_date"}
+
+    data_entrega = pedido.get("data_entrega").strip()
+    # Converte DD/MM/YYYY para YYYY-MM-DD se necessário
+    if "/" in data_entrega:
+        try:
+            partes = data_entrega.split("/")
+            if len(partes) == 3:
+                data_entrega = f"{partes[2]}-{partes[1].zfill(2)}-{partes[0].zfill(2)}"
+        except Exception:
+            pass
+
+    token_info = obter_access_token_google_usuario(user_id)
+    if not token_info.get("success"):
+        return token_info
+
+    access_token = token_info.get("access_token")
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    cliente = pedido.get("cliente") or "Cliente"
+    produto_nome = pedido.get("produto_nome") or "Bolsa"
+    emoji = pedido.get("produto_emoji") or "👜"
+    status = pedido.get("status") or "Pendente"
+    qtd = pedido.get("quantidade") or 1
+    total = float(pedido.get("valor_total") or 0.0)
+    obs = pedido.get("observacoes") or ""
+
+    status_prefix = ""
+    if status == "Entregue":
+        status_prefix = "✅ [Entregue] "
+    elif status == "Concluído":
+        status_prefix = "✨ [Concluído] "
+    elif status == "Cancelado":
+        status_prefix = "❌ [Cancelado] "
+
+    summary = f"{status_prefix}{emoji} Entrega: {cliente} ({produto_nome})"
+    description = (
+        f"🧵 Ateliê Haiti — Entrega de Pedido\n\n"
+        f"• Cliente: {cliente}\n"
+        f"• Produto: {emoji} {produto_nome} (x{qtd})\n"
+        f"• Valor Total: R$ {total:.2f}\n"
+        f"• Status: {status}\n"
+    )
+    if obs:
+        description += f"• Observações: {obs}\n"
+    description += f"\nID do Pedido: {pedido.get('id')}"
+
+    event_body = {
+        "summary": summary,
+        "description": description,
+        "start": {"date": data_entrega},
+        "end": {"date": data_entrega},
+        "reminders": {
+            "useDefault": False,
+            "overrides": [
+                {"method": "popup", "minutes": 24 * 60},
+                {"method": "popup", "minutes": 9 * 60}
+            ]
+        }
+    }
+
+    google_event_id = pedido.get("google_event_id")
+    endpoint = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
+    now_iso = agora().isoformat()
+
+    try:
+        if google_event_id:
+            resp = requests.patch(
+                f"{endpoint}/{google_event_id}",
+                headers=headers,
+                json=event_body,
+                timeout=15
+            )
+            if resp.status_code == 200:
+                event_data = resp.json()
+                _atualizar_pedido_sync_calendar(pedido.get("id"), google_event_id, now_iso)
+                return {"success": True, "action": "updated", "event_id": google_event_id, "htmlLink": event_data.get("htmlLink")}
+            elif resp.status_code != 404:
+                return {"success": False, "status_code": resp.status_code, "error": resp.text}
+
+        resp = requests.post(
+            endpoint,
+            headers=headers,
+            json=event_body,
+            timeout=15
+        )
+        if resp.status_code in (200, 201):
+            event_data = resp.json()
+            new_event_id = event_data.get("id")
+            _atualizar_pedido_sync_calendar(pedido.get("id"), new_event_id, now_iso)
+            return {"success": True, "action": "created", "event_id": new_event_id, "htmlLink": event_data.get("htmlLink")}
+        else:
+            return {"success": False, "status_code": resp.status_code, "error": resp.text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def excluir_evento_google_calendar(google_event_id, user_id=None):
+    """Remove um evento da agenda primária do Google Calendar."""
+    if not google_event_id:
+        return {"success": False, "reason": "no_event_id"}
+
+    token_info = obter_access_token_google_usuario(user_id)
+    if not token_info.get("success"):
+        return token_info
+
+    access_token = token_info.get("access_token")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    endpoint = f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{google_event_id}"
+
+    try:
+        resp = requests.delete(endpoint, headers=headers, timeout=15)
+        if resp.status_code in (200, 204, 404):
+            return {"success": True}
+        return {"success": False, "status_code": resp.status_code, "error": resp.text}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def sincronizar_todos_pedidos_google_calendar(user_id=None):
+    """
+    Sincroniza todos os pedidos ativos que possuem data de entrega com o Google Calendar.
+    """
+    pedidos_lista = []
+    if USE_SQLITE:
+        init_db()
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pedidos WHERE data_entrega IS NOT NULL AND data_entrega != '' AND status != 'Cancelado'")
+        rows = cur.fetchall()
+        conn.close()
+        for r in rows:
+            pedidos_lista.append(dict(r))
+    else:
+        pedidos_lista = [p for p in carregar_json("pedidos.json") if p.get("data_entrega") and p.get("status") != "Cancelado"]
+
+    total = len(pedidos_lista)
+    sucessos = 0
+    erros = 0
+    detalhes_erros = []
+
+    for p in pedidos_lista:
+        res = criar_ou_atualizar_evento_google_calendar(p, user_id)
+        if res.get("success"):
+            sucessos += 1
+        else:
+            erros += 1
+            detalhes_erros.append(f"{p.get('cliente')}: {res.get('reason') or res.get('error') or 'Falha'}")
+
+    return {
+        "total": total,
+        "sucessos": sucessos,
+        "erros": erros,
+        "detalhes_erros": detalhes_erros
+    }
+
+
+def verificar_conexao_google_calendar(user_id=None):
+    """Verifica se há conexão ativa com o Google Calendar."""
+    token_info = obter_access_token_google_usuario(user_id)
+    if not token_info.get("success"):
+        return {"conectado": False, "motivo": token_info.get("reason", "Sem autorização Google")}
+
+    access_token = token_info.get("access_token")
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/calendar/v3/calendars/primary",
+            headers=headers,
+            timeout=10
+        )
+        if resp.status_code == 200:
+            cal = resp.json()
+            return {
+                "conectado": True,
+                "email": token_info.get("email") or cal.get("id"),
+                "summary": cal.get("summary"),
+                "timeZone": cal.get("timeZone")
+            }
+        elif resp.status_code in (401, 403):
+            return {"conectado": False, "motivo": "Permissão do Google Calendar pendente. Reconecte via Google SSO."}
+        else:
+            return {"conectado": False, "motivo": f"Erro {resp.status_code}"}
+    except Exception as e:
+        return {"conectado": False, "motivo": str(e)}
 
 
 def obter_configuracoes_sso():
@@ -2007,7 +2315,7 @@ def auth_google_login():
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": "openid email profile https://www.googleapis.com/auth/gmail.send",
+        "scope": "openid email profile https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/calendar.events",
         "access_type": "offline",
         "prompt": "consent",
         "state": state
@@ -3266,6 +3574,7 @@ def carregar_pedidos():
         conn.close()
         res = []
         for r in rows:
+            keys = r.keys() if hasattr(r, 'keys') else []
             res.append({
                 "id": r["id"],
                 "cliente": r["cliente"],
@@ -3277,9 +3586,14 @@ def carregar_pedidos():
                 "valor_total": r["valor_total"],
                 "status": r["status"],
                 "materiais_baixados": bool(r["materiais_baixados"]),
-                "usou_estoque_pronto": bool(r["usou_estoque_pronto"]) if "usou_estoque_pronto" in r.keys() else False,
+                "usou_estoque_pronto": bool(r["usou_estoque_pronto"]) if "usou_estoque_pronto" in keys else False,
                 "data_pedido": r["data_pedido"],
                 "data_pedido_iso": r["data_pedido_iso"],
+                "data_entrega": r["data_entrega"] if "data_entrega" in keys and r["data_entrega"] else "",
+                "google_event_id": r["google_event_id"] if "google_event_id" in keys and r["google_event_id"] else "",
+                "google_calendar_synced_at": r["google_calendar_synced_at"] if "google_calendar_synced_at" in keys and r["google_calendar_synced_at"] else "",
+                "origem": r["origem"] if "origem" in keys and r["origem"] else "web",
+                "telefone_cliente": r["telefone_cliente"] if "telefone_cliente" in keys and r["telefone_cliente"] else "",
                 "observacoes": r["observacoes"],
             })
         return res
@@ -3964,6 +4278,9 @@ def pedidos():
             keys = r.keys() if hasattr(r, 'keys') else []
             origem = r["origem"] if "origem" in keys and r["origem"] else ("whatsapp" if "whatsapp" in str(r["observacoes"] or "").lower() else "web")
             tel = r["telefone_cliente"] if "telefone_cliente" in keys and r["telefone_cliente"] else ""
+            data_entrega = r["data_entrega"] if "data_entrega" in keys and r["data_entrega"] else ""
+            google_event_id = r["google_event_id"] if "google_event_id" in keys and r["google_event_id"] else ""
+            google_calendar_synced_at = r["google_calendar_synced_at"] if "google_calendar_synced_at" in keys and r["google_calendar_synced_at"] else ""
             res.append({
                 "id": r["id"],
                 "cliente": r["cliente"],
@@ -3980,6 +4297,9 @@ def pedidos():
                 "observacoes": r["observacoes"],
                 "origem": origem,
                 "telefone_cliente": tel,
+                "data_entrega": data_entrega,
+                "google_event_id": google_event_id,
+                "google_calendar_synced_at": google_calendar_synced_at,
             })
         return render_template("pedidos.html", pedidos=res, status_lista=STATUS_PEDIDO, status_badge=STATUS_PEDIDO_BADGE)
 
@@ -3989,6 +4309,12 @@ def pedidos():
             p["origem"] = "whatsapp" if "whatsapp" in str(p.get("observacoes", "")).lower() else "web"
         if "telefone_cliente" not in p:
             p["telefone_cliente"] = ""
+        if "data_entrega" not in p:
+            p["data_entrega"] = ""
+        if "google_event_id" not in p:
+            p["google_event_id"] = ""
+        if "google_calendar_synced_at" not in p:
+            p["google_calendar_synced_at"] = ""
     lista_ordenada = sorted(lista, key=lambda p: p.get("data_pedido_iso", ""), reverse=True)
     return render_template("pedidos.html", pedidos=lista_ordenada, status_lista=STATUS_PEDIDO,
                             status_badge=STATUS_PEDIDO_BADGE)
@@ -4006,6 +4332,7 @@ def pedido_novo():
             quantidade = int(request.form.get("quantidade", 1) or 1)
         except ValueError:
             quantidade = 1
+        data_entrega = request.form.get("data_entrega", "").strip()
         observacoes = request.form.get("observacoes", "").strip()
 
         produto = next((p for p in produtos_lista if p["id"] == produto_id), None)
@@ -4032,7 +4359,12 @@ def pedido_novo():
             "usou_estoque_pronto": 1 if usar_pronta else 0,
             "data_pedido": dt_pedido.strftime("%d/%m/%Y"),
             "data_pedido_iso": dt_pedido.strftime("%Y-%m-%d %H:%M:%S"),
+            "data_entrega": data_entrega,
+            "google_event_id": "",
+            "google_calendar_synced_at": "",
             "observacoes": observacoes,
+            "origem": "web",
+            "telefone_cliente": "",
         }
         if USE_SQLITE:
             init_db()
@@ -4055,9 +4387,9 @@ def pedido_novo():
                     )
                 )
             cur.execute(
-                "INSERT INTO pedidos (id,cliente,produto_id,produto_nome,produto_emoji,quantidade,preco_unitario,valor_total,status,materiais_baixados,usou_estoque_pronto,data_pedido,data_pedido_iso,observacoes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO pedidos (id,cliente,produto_id,produto_nome,produto_emoji,quantidade,preco_unitario,valor_total,status,materiais_baixados,usou_estoque_pronto,data_pedido,data_pedido_iso,data_entrega,google_event_id,google_calendar_synced_at,origem,telefone_cliente,observacoes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    novo["id"], novo["cliente"], novo["produto_id"], novo["produto_nome"], novo["produto_emoji"], novo["quantidade"], novo["preco_unitario"], novo["valor_total"], novo["status"], novo["materiais_baixados"], novo["usou_estoque_pronto"], novo["data_pedido"], novo["data_pedido_iso"], novo["observacoes"], dt_pedido.isoformat(), dt_pedido.isoformat()
+                    novo["id"], novo["cliente"], novo["produto_id"], novo["produto_nome"], novo["produto_emoji"], novo["quantidade"], novo["preco_unitario"], novo["valor_total"], novo["status"], novo["materiais_baixados"], novo["usou_estoque_pronto"], novo["data_pedido"], novo["data_pedido_iso"], novo["data_entrega"], novo["google_event_id"], novo["google_calendar_synced_at"], novo["origem"], novo["telefone_cliente"], novo["observacoes"], dt_pedido.isoformat(), dt_pedido.isoformat()
                 )
             )
             conn.commit()
@@ -4070,10 +4402,19 @@ def pedido_novo():
             pedidos_lista.append(novo)
             salvar_json("pedidos.json", pedidos_lista)
 
+        # Sincronização opcional automática com o Google Calendar
+        if data_entrega:
+            try:
+                sync_res = criar_ou_atualizar_evento_google_calendar(novo, session.get("user_id"))
+                if sync_res.get("success"):
+                    novo["google_event_id"] = sync_res.get("event_id")
+            except Exception:
+                pass
+
         if usar_pronta:
             flash(f"Pedido de {cliente} registrado e atendido imediatamente com {quantidade} peça(s) pronta(s) do estoque!")
         else:
-            flash(f"Pedido de {cliente} registrado.")
+            flash(f"Pedido de {cliente} registrado com sucesso.")
         return redirect(url_for("pedidos"))
 
     gtin_inicial = request.args.get("gtin", "").strip()
@@ -4138,6 +4479,14 @@ def pedido_status(pedido_id):
                 cur.execute("UPDATE pedidos SET status=?, updated_at=? WHERE id=?", (novo_status, now_iso, pedido_id))
                 conn.commit()
                 flash(f'Pedido de {p["cliente"]} cancelado. {qtd_ped}x {p["produto_nome"]} foi guardada no estoque de peças prontas para outro cliente.')
+                # Atualiza Google Calendar
+                try:
+                    cur.execute("SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+                    p_atualizado = dict(cur.fetchone())
+                    if p_atualizado.get("google_event_id") or p_atualizado.get("data_entrega"):
+                        criar_ou_atualizar_evento_google_calendar(p_atualizado, usuario_id)
+                except Exception:
+                    pass
                 return redirect(url_for("pedidos"))
 
             # Se for mover para produção, concluído ou entregue e ainda não deu baixa automática dos materiais da receita
@@ -4214,6 +4563,16 @@ def pedido_status(pedido_id):
                 cur.execute("UPDATE pedidos SET status=?, updated_at=? WHERE id=?", (novo_status, now_iso, pedido_id))
 
             conn.commit()
+
+            # Atualiza o Google Calendar caso o pedido possua evento vinculado ou data de entrega
+            try:
+                cur.execute("SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+                p_atualizado = dict(cur.fetchone())
+                if p_atualizado.get("google_event_id") or p_atualizado.get("data_entrega"):
+                    criar_ou_atualizar_evento_google_calendar(p_atualizado, usuario_id)
+            except Exception:
+                pass
+
             flash(f'Pedido de {p["cliente"]} atualizado para "{novo_status}".')
         except Exception as e:
             try:
@@ -4274,6 +4633,13 @@ def pedido_status(pedido_id):
                 pedido["materiais_baixados"] = True
 
     salvar_json("pedidos.json", pedidos_lista)
+
+    if pedido.get("google_event_id") or pedido.get("data_entrega"):
+        try:
+            criar_ou_atualizar_evento_google_calendar(pedido, usuario_id)
+        except Exception:
+            pass
+
     flash(f'Pedido de {pedido["cliente"]} atualizado para "{novo_status}".')
     return redirect(url_for("pedidos"))
 
@@ -4281,10 +4647,19 @@ def pedido_status(pedido_id):
 @app.route("/pedidos/<pedido_id>/excluir", methods=["POST"])
 @requires_permission('pedidos', 'delete')
 def pedido_excluir(pedido_id):
+    usuario_id = session.get("user_id") if session else None
     if USE_SQLITE:
         init_db()
         conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
         cur = conn.cursor()
+        cur.execute("SELECT google_event_id FROM pedidos WHERE id=?", (pedido_id,))
+        row = cur.fetchone()
+        if row and row["google_event_id"]:
+            try:
+                excluir_evento_google_calendar(row["google_event_id"], usuario_id)
+            except Exception:
+                pass
         cur.execute("DELETE FROM pedidos WHERE id=?", (pedido_id,))
         conn.commit()
         conn.close()
@@ -4292,10 +4667,294 @@ def pedido_excluir(pedido_id):
         return redirect(url_for("pedidos"))
 
     pedidos_lista = carregar_json("pedidos.json")
+    p_alvo = next((p for p in pedidos_lista if p["id"] == pedido_id), None)
+    if p_alvo and p_alvo.get("google_event_id"):
+        try:
+            excluir_evento_google_calendar(p_alvo["google_event_id"], usuario_id)
+        except Exception:
+            pass
     pedidos_lista = [p for p in pedidos_lista if p["id"] != pedido_id]
     salvar_json("pedidos.json", pedidos_lista)
     flash("Pedido removido.")
     return redirect(url_for("pedidos"))
+
+
+# ── Agenda & Calendário de Entregas (Google Calendar) ─────────────────────────
+
+@app.route("/calendario")
+@app.route("/pedidos/calendario")
+@requires_permission("pedidos", "read")
+def calendario_entregas():
+    mes_param = request.args.get("mes", "").strip()
+    hoje = agora().date()
+    ano_atual = hoje.year
+    mes_atual = hoje.month
+
+    if mes_param and re.match(r"^\d{4}-\d{2}$", mes_param):
+        try:
+            partes = mes_param.split("-")
+            ano_atual = int(partes[0])
+            mes_atual = int(partes[1])
+        except Exception:
+            ano_atual = hoje.year
+            mes_atual = hoje.month
+
+    if mes_atual == 1:
+        mes_ant = f"{ano_atual - 1}-12"
+    else:
+        mes_ant = f"{ano_atual}-{str(mes_atual - 1).zfill(2)}"
+
+    if mes_atual == 12:
+        mes_prox = f"{ano_atual + 1}-01"
+    else:
+        mes_prox = f"{ano_atual}-{str(mes_atual + 1).zfill(2)}"
+
+    nomes_meses = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+    nome_mes = f"{nomes_meses[mes_atual]} de {ano_atual}"
+
+    if USE_SQLITE:
+        init_db()
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pedidos ORDER BY data_pedido_iso DESC")
+        rows = cur.fetchall()
+        conn.close()
+        todos_pedidos = []
+        for r in rows:
+            keys = r.keys() if hasattr(r, 'keys') else []
+            origem = r["origem"] if "origem" in keys and r["origem"] else ("whatsapp" if "whatsapp" in str(r["observacoes"] or "").lower() else "web")
+            tel = r["telefone_cliente"] if "telefone_cliente" in keys and r["telefone_cliente"] else ""
+            data_entrega = r["data_entrega"] if "data_entrega" in keys and r["data_entrega"] else ""
+            google_event_id = r["google_event_id"] if "google_event_id" in keys and r["google_event_id"] else ""
+            google_calendar_synced_at = r["google_calendar_synced_at"] if "google_calendar_synced_at" in keys and r["google_calendar_synced_at"] else ""
+            todos_pedidos.append({
+                "id": r["id"],
+                "cliente": r["cliente"],
+                "produto_id": r["produto_id"],
+                "produto_nome": r["produto_nome"],
+                "produto_emoji": r["produto_emoji"],
+                "quantidade": r["quantidade"],
+                "preco_unitario": r["preco_unitario"],
+                "valor_total": r["valor_total"],
+                "status": r["status"],
+                "materiais_baixados": bool(r["materiais_baixados"]),
+                "data_pedido": r["data_pedido"],
+                "data_pedido_iso": r["data_pedido_iso"],
+                "observacoes": r["observacoes"],
+                "origem": origem,
+                "telefone_cliente": tel,
+                "data_entrega": data_entrega,
+                "google_event_id": google_event_id,
+                "google_calendar_synced_at": google_calendar_synced_at,
+            })
+    else:
+        todos_pedidos = carregar_json("pedidos.json")
+        for p in todos_pedidos:
+            if "data_entrega" not in p:
+                p["data_entrega"] = ""
+            if "google_event_id" not in p:
+                p["google_event_id"] = ""
+            if "google_calendar_synced_at" not in p:
+                p["google_calendar_synced_at"] = ""
+
+    pedidos_por_data = {}
+    pedidos_com_entrega = []
+    pedidos_sem_entrega = []
+    total_agendados = 0
+    total_atrasados = 0
+    total_hoje = 0
+    total_semana = 0
+
+    hoje_iso = hoje.strftime("%Y-%m-%d")
+    em_7_dias = (hoje + timedelta(days=7)).strftime("%Y-%m-%d")
+
+    for p in todos_pedidos:
+        dt_ent = (p.get("data_entrega") or "").strip()
+        if dt_ent:
+            if "/" in dt_ent:
+                try:
+                    pt = dt_ent.split("/")
+                    if len(pt) == 3:
+                        dt_ent = f"{pt[2]}-{pt[1].zfill(2)}-{pt[0].zfill(2)}"
+                        p["data_entrega"] = dt_ent
+                except Exception:
+                    pass
+
+            pedidos_com_entrega.append(p)
+            if dt_ent not in pedidos_por_data:
+                pedidos_por_data[dt_ent] = []
+            pedidos_por_data[dt_ent].append(p)
+
+            if p.get("status") not in ("Entregue", "Cancelado"):
+                total_agendados += 1
+                if dt_ent < hoje_iso:
+                    total_atrasados += 1
+                elif dt_ent == hoje_iso:
+                    total_hoje += 1
+                elif hoje_iso < dt_ent <= em_7_dias:
+                    total_semana += 1
+        else:
+            if p.get("status") not in ("Entregue", "Cancelado"):
+                pedidos_sem_entrega.append(p)
+
+    pedidos_com_entrega.sort(key=lambda x: x.get("data_entrega", ""))
+
+    cal_obj = calendar.Calendar(firstweekday=6) # Começa no Domingo
+    dias_grade = []
+    for d in cal_obj.itermonthdates(ano_atual, mes_atual):
+        d_iso = d.strftime("%Y-%m-%d")
+        dias_grade.append({
+            "data": d,
+            "data_iso": d_iso,
+            "dia": d.day,
+            "mes": d.month,
+            "ano": d.year,
+            "mesmo_mes": (d.month == mes_atual),
+            "e_hoje": (d == hoje),
+            "pedidos": pedidos_por_data.get(d_iso, [])
+        })
+
+    usuario_id = session.get("user_id") if session else None
+    google_cal_info = verificar_conexao_google_calendar(usuario_id)
+
+    return render_template(
+        "calendario_entregas.html",
+        nome_mes=nome_mes,
+        mes_atual_iso=f"{ano_atual}-{str(mes_atual).zfill(2)}",
+        mes_ant=mes_ant,
+        mes_prox=mes_prox,
+        dias_grade=dias_grade,
+        pedidos_com_entrega=pedidos_com_entrega,
+        pedidos_sem_entrega=pedidos_sem_entrega,
+        hoje_iso=hoje_iso,
+        total_agendados=total_agendados,
+        total_atrasados=total_atrasados,
+        total_hoje=total_hoje,
+        total_semana=total_semana,
+        google_cal_info=google_cal_info,
+        status_lista=STATUS_PEDIDO,
+        status_badge=STATUS_PEDIDO_BADGE
+    )
+
+
+@app.route("/pedidos/<pedido_id>/data-entrega", methods=["POST"])
+@requires_permission('pedidos', 'update')
+def pedido_data_entrega(pedido_id):
+    nova_data = request.form.get("data_entrega", "").strip()
+    if "/" in nova_data:
+        try:
+            pt = nova_data.split("/")
+            if len(pt) == 3:
+                nova_data = f"{pt[2]}-{pt[1].zfill(2)}-{pt[0].zfill(2)}"
+        except Exception:
+            pass
+
+    now_iso = agora().isoformat()
+    p_atualizado = None
+    usuario_id = session.get("user_id") if session else None
+
+    if USE_SQLITE:
+        init_db()
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            flash("Pedido não encontrado.")
+            return redirect(request.referrer or url_for("pedidos"))
+        cur.execute("UPDATE pedidos SET data_entrega=?, updated_at=? WHERE id=?", (nova_data, now_iso, pedido_id))
+        conn.commit()
+        cur.execute("SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+        p_atualizado = dict(cur.fetchone())
+        conn.close()
+    else:
+        pedidos = carregar_json("pedidos.json")
+        for p in pedidos:
+            if p["id"] == pedido_id:
+                p["data_entrega"] = nova_data
+                p["updated_at"] = now_iso
+                p_atualizado = p
+                break
+        salvar_json("pedidos.json", pedidos)
+
+    if not p_atualizado:
+        flash("Pedido não encontrado.")
+        return redirect(request.referrer or url_for("pedidos"))
+
+    # Sincroniza com o Google Calendar
+    if nova_data:
+        sync_res = criar_ou_atualizar_evento_google_calendar(p_atualizado, usuario_id)
+        if sync_res.get("success"):
+            flash(f"Data de entrega definida para {filtro_data_br(nova_data)} e sincronizada no Google Calendar!")
+        else:
+            flash(f"Data de entrega salva ({filtro_data_br(nova_data)}). Google Calendar: {sync_res.get('reason') or sync_res.get('error') or 'não configurado'}")
+    else:
+        if p_atualizado.get("google_event_id"):
+            excluir_evento_google_calendar(p_atualizado.get("google_event_id"), usuario_id)
+            _atualizar_pedido_sync_calendar(pedido_id, "", "")
+        flash("Data de entrega removida.")
+
+    return redirect(request.referrer or url_for("pedidos"))
+
+
+@app.route("/pedidos/<pedido_id>/sync-calendar", methods=["POST"])
+@requires_permission('pedidos', 'update')
+def pedido_sync_calendar(pedido_id):
+    p_alvo = None
+    usuario_id = session.get("user_id") if session else None
+
+    if USE_SQLITE:
+        init_db()
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM pedidos WHERE id=?", (pedido_id,))
+        row = cur.fetchone()
+        conn.close()
+        if row:
+            p_alvo = dict(row)
+    else:
+        pedidos = carregar_json("pedidos.json")
+        p_alvo = next((p for p in pedidos if p["id"] == pedido_id), None)
+
+    if not p_alvo:
+        flash("Pedido não encontrado.")
+        return redirect(request.referrer or url_for("pedidos"))
+
+    if not p_alvo.get("data_entrega"):
+        flash("Defina uma data de entrega antes de sincronizar com a agenda.")
+        return redirect(request.referrer or url_for("pedidos"))
+
+    res = criar_ou_atualizar_evento_google_calendar(p_alvo, usuario_id)
+    if res.get("success"):
+        flash(f"✅ Pedido de {p_alvo.get('cliente')} sincronizado com sucesso no Google Calendar!")
+    else:
+        motivo = res.get("reason") or res.get("error") or "Falha desconhecida"
+        flash(f"Não foi possível sincronizar com o Google Calendar: {motivo}")
+
+    return redirect(request.referrer or url_for("pedidos"))
+
+
+@app.route("/pedidos/sync-calendar-todos", methods=["POST"])
+@requires_permission('pedidos', 'update')
+def pedidos_sync_calendar_todos():
+    usuario_id = session.get("user_id") if session else None
+    res = sincronizar_todos_pedidos_google_calendar(usuario_id)
+    total = res.get("total", 0)
+    sucessos = res.get("sucessos", 0)
+    erros = res.get("erros", 0)
+
+    if total == 0:
+        flash("Nenhum pedido ativo com data de entrega encontrado para sincronizar.")
+    elif erros == 0:
+        flash(f"✅ Sucesso total! Todos os {sucessos} pedido(s) foram sincronizados no Google Calendar.")
+    else:
+        flash(f"Sincronização: {sucessos} pedido(s) sincronizados com sucesso, {erros} com erro.")
+
+    return redirect(request.referrer or url_for("calendario_entregas"))
 
 
 # ── Sobras e Reaproveitamento ──────────────────────────────────────────────────
@@ -6906,6 +7565,36 @@ def developer_sso_testar_gmail():
             flash(f"✅ E-mail de diagnóstico enviado com sucesso via Gmail API para {email_teste}!")
     else:
         flash(f"Falha no teste de envio: {res.get('error')}")
+
+    return redirect(url_for("developer_dashboard", tab="sso"))
+
+
+@app.route("/developer/sso/testar-calendar", methods=["POST"])
+@requires_developer
+def developer_sso_testar_calendar():
+    conn_info = verificar_conexao_google_calendar(session.get("user_id"))
+    if not conn_info.get("conectado"):
+        flash(f"❌ Falha ao conectar com o Google Calendar: {conn_info.get('motivo')}")
+        return redirect(url_for("developer_dashboard", tab="sso"))
+
+    dt_teste = (agora() + timedelta(days=1)).strftime("%Y-%m-%d")
+    pedido_mock = {
+        "id": "teste-diagnostico-" + str(uuid.uuid4())[:8],
+        "cliente": "Diagnóstico Dev",
+        "produto_nome": "Bolsa Diagnóstico Calendar",
+        "produto_emoji": "📅",
+        "quantidade": 1,
+        "valor_total": 0.0,
+        "status": "Pendente",
+        "observacoes": "Evento de teste gerado pelo Developer Hub para validação de token OAuth2 e Google Calendar API.",
+        "data_entrega": dt_teste
+    }
+    res = criar_ou_atualizar_evento_google_calendar(pedido_mock, session.get("user_id"))
+    if res.get("success"):
+        cal_nome = conn_info.get("summary") or conn_info.get("email") or "Principal"
+        flash(f"✅ Conexão com o Google Calendar validada com sucesso! Evento de teste criado na agenda '{cal_nome}' para {filtro_data_br(dt_teste)}.")
+    else:
+        flash(f"❌ Falha ao criar evento de teste no Google Calendar: {res.get('reason') or res.get('error')}")
 
     return redirect(url_for("developer_dashboard", tab="sso"))
 

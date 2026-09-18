@@ -5,6 +5,9 @@
 
 <div style="display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; align-items:center;">
   <a href="{{ url_for('pedido_novo') }}" class="btn-primary" style="flex:1; min-width:160px; text-align:center;">➕ Novo Pedido</a>
+  <a href="{{ url_for('calendario_entregas') }}" class="btn-secondary" style="padding:10px 16px; font-size:15px; display:inline-flex; align-items:center; gap:6px;">
+    📅 Agenda de Entregas
+  </a>
   <button type="button" class="btn-scan" style="padding:10px 16px; font-size:15px;" onclick="abrirScanner(null, (gtin) => { window.location.href = '{{ url_for('pedido_novo') }}?gtin=' + encodeURIComponent(gtin); })">
     📷 Ler Código da Bolsa
   </button>
@@ -62,8 +65,37 @@
         <p class="font-crimson" style="color:var(--muted); font-style:italic; font-size:15px; margin-top:3px;">
           {{ p.quantidade }}x {{ p.produto_nome }} · {{ p.data_pedido }}
         </p>
+
+        <!-- Data de Entrega e Google Calendar -->
+        <div style="display:flex; align-items:center; gap:8px; margin-top:5px; flex-wrap:wrap;">
+          {% if p.data_entrega %}
+            <span style="background:rgba(217, 119, 6, 0.12); color:#b45309; border:1px solid rgba(217, 119, 6, 0.3); font-size:12px; font-weight:700; padding:2px 8px; border-radius:8px; display:inline-flex; align-items:center; gap:4px;" title="Prazo prometido de entrega">
+              📅 Entrega: {{ p.data_entrega|data_br }}
+            </span>
+            <button type="button" onclick="abrirModalDataEntrega('{{ p.id }}', '{{ p.cliente }}', '{{ p.data_entrega }}')" class="btn-ghost" style="font-size:11px; padding:2px 6px; border:1px dashed var(--border);" title="Editar data de entrega">
+              ✏️
+            </button>
+          {% else %}
+            <button type="button" onclick="abrirModalDataEntrega('{{ p.id }}', '{{ p.cliente }}', '')" class="btn-ghost" style="font-size:11.5px; padding:2px 8px; border-radius:8px; border:1px dashed var(--border); color:var(--muted);" title="Definir data de entrega">
+              ➕ Definir data de entrega
+            </button>
+          {% endif %}
+
+          {% if p.google_event_id %}
+            <a href="https://calendar.google.com/" target="_blank" style="background:rgba(66, 133, 244, 0.1); color:#1d4ed8; border:1px solid rgba(66, 133, 244, 0.3); font-size:11.5px; font-weight:700; padding:2px 8px; border-radius:8px; text-decoration:none; display:inline-flex; align-items:center; gap:3px;" title="Sincronizado no Google Calendar. Clique para abrir no navegador.">
+              🗓️ Google Agenda ✓
+            </a>
+          {% elif p.data_entrega %}
+            <form method="post" action="{{ url_for('pedido_sync_calendar', pedido_id=p.id) }}" style="display:inline; margin:0;">
+              <button type="submit" class="btn-ghost" style="font-size:11.5px; padding:2px 8px; border-radius:8px; border:1px solid rgba(66, 133, 244, 0.35); color:#1d4ed8; background:rgba(66, 133, 244, 0.06);" title="Sincronizar este pedido com o Google Calendar">
+                🔄 Sincronizar Agenda
+              </button>
+            </form>
+          {% endif %}
+        </div>
+
         {% if p.observacoes %}
-        <p class="font-crimson" style="color:var(--muted); font-style:italic; font-size:14px; margin-top:3px;">"{{ p.observacoes }}"</p>
+        <p class="font-crimson" style="color:var(--muted); font-style:italic; font-size:14px; margin-top:5px;">"{{ p.observacoes }}"</p>
         {% endif %}
       </div>
       <div style="text-align:right; flex-shrink:0;">
@@ -98,6 +130,32 @@
   </div>
 </div>
 {% endfor %}
+
+<!-- Modal Rápido de Data de Entrega -->
+<div id="modal_pedidos_data" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center; padding:16px; backdrop-filter:blur(3px);">
+  <div class="card" style="max-width:400px; width:100%; padding:22px; border-radius:16px; box-shadow:0 15px 35px rgba(0,0,0,0.3);">
+    <h3 class="font-serif" style="margin:0 0 4px 0; font-size:18px; color:var(--primary); font-weight:700;">
+      📅 Definir Data de Entrega
+    </h3>
+    <p class="font-crimson" id="lbl_cliente_modal_pedidos" style="margin:0 0 14px 0; color:var(--muted); font-style:italic; font-size:14px;"></p>
+    <form method="post" id="form_pedidos_data" action="">
+      <div style="margin-bottom:16px;">
+        <label for="inp_data_pedidos_modal" style="display:block; font-weight:700; font-size:13px; color:var(--text); margin-bottom:6px;">
+          Data da Entrega:
+        </label>
+        <input type="date" name="data_entrega" id="inp_data_pedidos_modal" class="input-vintage" style="font-size:16px !important; padding:10px;" required>
+        <p class="font-crimson" style="font-size:12px; color:var(--muted); font-style:italic; margin:4px 0 0 0;">
+          A data será sincronizada com o Google Calendar caso esteja conectado.
+        </p>
+      </div>
+      <div style="display:flex; justify-content:flex-end; gap:8px;">
+        <button type="button" onclick="fecharModalDataEntrega()" class="btn-ghost" style="padding:8px 14px;">Cancelar</button>
+        <button type="submit" class="btn-primary" style="padding:8px 16px;">💾 Salvar Data</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
 
 {% block scripts %}
 <script>
@@ -150,6 +208,27 @@
 
   // Verifica a cada 4.5 segundos
   setInterval(verificarNovosPedidos, 4500);
+
+  function abrirModalDataEntrega(pedidoId, cliente, dataAtual) {
+    const modal = document.getElementById('modal_pedidos_data');
+    const form = document.getElementById('form_pedidos_data');
+    const lbl = document.getElementById('lbl_cliente_modal_pedidos');
+    const inp = document.getElementById('inp_data_pedidos_modal');
+
+    form.action = '/pedidos/' + pedidoId + '/data-entrega';
+    lbl.textContent = 'Definir prazo de entrega para ' + cliente;
+    inp.value = dataAtual || '';
+    modal.style.display = 'flex';
+  }
+
+  function fecharModalDataEntrega() {
+    document.getElementById('modal_pedidos_data').style.display = 'none';
+  }
+
+  window.addEventListener('click', function(e) {
+    const m = document.getElementById('modal_pedidos_data');
+    if (e.target === m) fecharModalDataEntrega();
+  });
 </script>
 {% endblock %}
-{% endblock %}
+
