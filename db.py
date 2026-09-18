@@ -66,6 +66,8 @@ TABLE_PRIMARY_KEYS = {
     "configuracoes_email": ["id"],
     "configuracoes_sso": ["id"],
     "configuracoes_cloudinary": ["id"],
+    "configuracoes_waha": ["id"],
+    "waha_mensagens": ["id"],
     "app_meta": ["key"],
 }
 
@@ -983,6 +985,52 @@ def init_db():
         """
     )
 
+    # configuracoes_waha
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracoes_waha (
+            id TEXT PRIMARY KEY,
+            api_url TEXT DEFAULT 'http://localhost:3000',
+            session_name TEXT DEFAULT 'default',
+            api_key TEXT DEFAULT '',
+            webhook_secret TEXT DEFAULT '',
+            ativo INTEGER DEFAULT 1,
+            auto_reply INTEGER DEFAULT 1,
+            notificar_admin INTEGER DEFAULT 0,
+            status_padrao TEXT DEFAULT 'Pendente',
+            updated_at TEXT
+        )
+        """
+    )
+
+    # waha_mensagens
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS waha_mensagens (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT,
+            telefone TEXT,
+            nome_contato TEXT,
+            direcao TEXT,
+            conteudo TEXT,
+            tipo_evento TEXT,
+            pedido_id TEXT,
+            raw_payload TEXT,
+            created_at TEXT
+        )
+        """
+    )
+
+    # Migração segura para colunas de rastreamento do WhatsApp na tabela pedidos
+    try:
+        cur.execute("ALTER TABLE pedidos ADD COLUMN origem TEXT DEFAULT 'web'")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE pedidos ADD COLUMN telefone_cliente TEXT DEFAULT ''")
+    except Exception:
+        pass
+
     # app_meta
     cur.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT)")
 
@@ -994,6 +1042,7 @@ def init_db():
         ("idx_pedidos_status", "CREATE INDEX IF NOT EXISTS idx_pedidos_status ON pedidos(status)"),
         ("idx_pedidos_created_at", "CREATE INDEX IF NOT EXISTS idx_pedidos_created_at ON pedidos(created_at)"),
         ("idx_pedidos_cliente", "CREATE INDEX IF NOT EXISTS idx_pedidos_cliente ON pedidos(cliente)"),
+        ("idx_pedidos_origem", "CREATE INDEX IF NOT EXISTS idx_pedidos_origem ON pedidos(origem)"),
         ("idx_produtos_nome", "CREATE INDEX IF NOT EXISTS idx_produtos_nome ON produtos(nome)"),
         ("idx_produtos_gtin", "CREATE INDEX IF NOT EXISTS idx_produtos_gtin ON produtos(gtin)"),
         ("idx_materiais_categoria", "CREATE INDEX IF NOT EXISTS idx_materiais_categoria ON materiais(categoria)"),
@@ -1002,6 +1051,8 @@ def init_db():
         ("idx_audits_actor", "CREATE INDEX IF NOT EXISTS idx_audits_actor ON audits(actor_username)"),
         ("idx_despesas_data", "CREATE INDEX IF NOT EXISTS idx_despesas_data ON despesas(data)"),
         ("idx_despesas_categoria", "CREATE INDEX IF NOT EXISTS idx_despesas_categoria ON despesas(categoria)"),
+        ("idx_waha_mensagens_created", "CREATE INDEX IF NOT EXISTS idx_waha_mensagens_created ON waha_mensagens(created_at)"),
+        ("idx_waha_mensagens_chat", "CREATE INDEX IF NOT EXISTS idx_waha_mensagens_chat ON waha_mensagens(chat_id)"),
     ]
     for _, sql_idx in indices_performance:
         try:

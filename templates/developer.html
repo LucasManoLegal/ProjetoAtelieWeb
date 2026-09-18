@@ -46,6 +46,20 @@
       </div>
 
       <div style="background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 10px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
+        <span style="font-size: 14px;">💬</span>
+        <span style="color: var(--muted);">WhatsApp:</span>
+        {% if waha_status.session_status == 'WORKING' %}
+          <span style="color: var(--success); font-weight: 700;">🟢 Conectado</span>
+        {% elif waha_status.session_status in ('SCAN_QR_CODE', 'SCAN_QR') %}
+          <span style="color: #d97706; font-weight: 700;">🟡 Aguardando QR</span>
+        {% elif config_waha.ativo %}
+          <span style="color: var(--danger); font-weight: 700;">🔴 Desconectado</span>
+        {% else %}
+          <span style="color: var(--muted); font-weight: 700;">⏸️ Desativado</span>
+        {% endif %}
+      </div>
+
+      <div style="background: var(--card); border: 1px solid var(--border); padding: 6px 12px; border-radius: 10px; font-size: 13.5px; display: flex; align-items: center; gap: 6px;">
         <span style="font-size: 14px;">⏰</span>
         <span style="color: var(--muted);">Agendador:</span>
         <span style="font-weight: 700; color: var(--success);">Ativo</span>
@@ -60,6 +74,16 @@
     </button>
     <button type="button" onclick="switchDevTab('cloudinary')" id="tabbtn_cloudinary" class="btn-ghost devtab-btn {{ 'active-subtab' if aba_ativa == 'cloudinary' }}" style="padding: 8px 16px; font-size: 14.5px; border-radius: 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
       ☁️ Cloudinary (Imagens na Nuvem)
+    </button>
+    <button type="button" onclick="switchDevTab('waha')" id="tabbtn_waha" class="btn-ghost devtab-btn {{ 'active-subtab' if aba_ativa == 'waha' }}" style="padding: 8px 16px; font-size: 14.5px; border-radius: 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
+      💬 WhatsApp (WAHA API)
+      {% if waha_status.session_status == 'WORKING' %}
+        <span style="font-size: 11px; background: rgba(34,197,94,0.18); color: #16a34a; padding: 2px 7px; border-radius: 10px; font-weight: 800;">ONLINE</span>
+      {% elif waha_status.session_status in ('SCAN_QR_CODE', 'SCAN_QR') %}
+        <span style="font-size: 11px; background: rgba(234,179,8,0.18); color: #ca8a04; padding: 2px 7px; border-radius: 10px; font-weight: 800;">QR CODE</span>
+      {% elif config_waha.ativo %}
+        <span style="font-size: 11px; background: rgba(239,68,68,0.15); color: #dc2626; padding: 2px 7px; border-radius: 10px; font-weight: 800;">OFFLINE</span>
+      {% endif %}
     </button>
     <button type="button" onclick="switchDevTab('ollama')" id="tabbtn_ollama" class="btn-ghost devtab-btn {{ 'active-subtab' if aba_ativa == 'ollama' }}" style="padding: 8px 16px; font-size: 14.5px; border-radius: 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
       🧠 Ollama IA &amp; Debugger
@@ -768,6 +792,429 @@
   </div>
 </div>
 
+<!-- ══════════════════════════════════════════════════════════════════════════════
+     ABA: WHATSAPP & WAHA API INTEGRATION
+══════════════════════════════════════════════════════════════════════════════ -->
+<div id="tabpanel_waha" class="devtab-panel" style="display: {{ 'block' if aba_ativa == 'waha' else 'none' }};">
+  
+  <!-- Banner Informativo & Status Rápido -->
+  <div class="card" style="padding: 18px 22px; margin-bottom: 20px; border-radius: 14px; background: linear-gradient(135deg, rgba(37,211,102,0.06), rgba(18,140,126,0.03)); border: 1px solid rgba(37,211,102,0.25);">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px;">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <div style="width: 48px; height: 48px; border-radius: 12px; background: #25D366; color: white; display: flex; align-items: center; justify-content: center; font-size: 26px; box-shadow: 0 4px 12px rgba(37,211,102,0.3);">
+          💬
+        </div>
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <h3 class="font-serif" style="margin: 0; font-size: 20px; color: var(--primary); font-weight: 800;">
+              Integração WhatsApp via WAHA HTTP API
+            </h3>
+            {% if waha_status.session_status == 'WORKING' %}
+              <span class="badge" style="background: #16a34a; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12.5px; font-weight: 700;">🟢 CONECTADO (WORKING)</span>
+            {% elif waha_status.session_status in ('SCAN_QR_CODE', 'SCAN_QR') %}
+              <span class="badge" style="background: #d97706; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12.5px; font-weight: 700;">🟡 AGUARDANDO QR CODE</span>
+            {% elif config_waha.ativo %}
+              <span class="badge" style="background: #dc2626; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12.5px; font-weight: 700;">🔴 DESCONECTADO</span>
+            {% else %}
+              <span class="badge" style="background: #6b7280; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12.5px; font-weight: 700;">⏸️ INTEGRAÇÃO DESATIVADA</span>
+            {% endif %}
+          </div>
+          <p class="font-crimson" style="margin: 4px 0 0 0; font-size: 14.5px; color: var(--muted); font-style: italic;">
+            Receba pedidos de clientes diretamente pelo WhatsApp com criação automática no sistema e respostas inteligentes da Ania
+          </p>
+        </div>
+      </div>
+
+      <!-- Quick Session Controls -->
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button type="button" onclick="carregarQrCodeWaha()" class="btn-secondary" style="font-size: 13.5px; padding: 8px 14px; display: inline-flex; align-items: center; gap: 6px;">
+          <span>📱 Ver / Atualizar QR Code</span>
+        </button>
+        <button type="button" onclick="controlarSessaoWaha('restart')" class="btn-ghost" style="font-size: 13.5px; padding: 8px 14px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border);">
+          <span>🔄 Reiniciar Sessão</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Grade Principal de Configuração & Status -->
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; margin-bottom: 24px;">
+    
+    <!-- Formulário de Configuração do WAHA -->
+    <div class="card" style="padding: 22px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 16px;">
+        <span style="font-size: 22px;">⚙️</span>
+        <div>
+          <h3 class="font-serif" style="margin: 0; font-size: 19px; color: var(--primary); font-weight: 800;">
+            Configuração da API WAHA
+          </h3>
+          <p class="font-crimson" style="margin: 2px 0 0 0; font-size: 13.5px; color: var(--muted); font-style: italic;">
+            Parâmetros do servidor local ou container Docker WAHA
+          </p>
+        </div>
+      </div>
+
+      <form method="post" action="{{ url_for('developer_waha_salvar') }}">
+        <!-- Status de Ativação -->
+        <div style="background: rgba(0,0,0,0.02); padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 14px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 700; color: var(--primary); font-size: 14px; margin: 0;">
+            <input type="checkbox" name="ativo" value="1" {% if config_waha.ativo %}checked{% endif %} style="width: 18px; height: 18px; accent-color: var(--primary);">
+            <span>Ativar Recepção e Processamento WAHA (WhatsApp)</span>
+          </label>
+        </div>
+
+        <div style="background: rgba(0,0,0,0.02); padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 14px;">
+          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-weight: 700; color: var(--primary); font-size: 14px; margin: 0;">
+            <input type="checkbox" name="auto_reply" value="1" {% if config_waha.auto_reply %}checked{% endif %} style="width: 18px; height: 18px; accent-color: var(--primary);">
+            <span>Resposta Automática Inteligente da Ania no WhatsApp</span>
+          </label>
+          <div style="font-size: 12px; color: var(--muted); margin-top: 4px; margin-left: 28px;">
+            Confirma pedidos instantaneamente, envia catálogo quando solicitado e tira dúvidas básicas.
+          </div>
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 14px; margin-bottom: 4px;">
+            URL Base do Servidor WAHA
+          </label>
+          <input type="text" name="api_url" id="waha_api_url" value="{{ config_waha.api_url }}" class="input-vintage"
+                 placeholder="Ex: http://localhost:3000 ou http://172.16.36.14:3000" required style="width: 100%; box-sizing: border-box; font-family: monospace;">
+          <span style="font-size: 12px; color: var(--muted);">Endereço onde o serviço WAHA está rodando.</span>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;">
+          <div>
+            <label style="display: block; font-weight: 700; color: var(--primary); font-size: 14px; margin-bottom: 4px;">
+              Nome da Sessão
+            </label>
+            <input type="text" name="session_name" id="waha_session_name" value="{{ config_waha.session_name }}" class="input-vintage"
+                   placeholder="default" required style="width: 100%; box-sizing: border-box; font-family: monospace;">
+            <span style="font-size: 11.5px; color: var(--muted);">Padrão: <code>default</code></span>
+          </div>
+
+          <div>
+            <label style="display: block; font-weight: 700; color: var(--primary); font-size: 14px; margin-bottom: 4px;">
+              Status Inicial do Pedido
+            </label>
+            <select name="status_padrao" class="input-vintage" style="width: 100%; box-sizing: border-box;">
+              <option value="Pendente" {% if config_waha.status_padrao == 'Pendente' %}selected{% endif %}>⏳ Pendente</option>
+              <option value="Em produção" {% if config_waha.status_padrao == 'Em produção' %}selected{% endif %}>🧵 Em produção</option>
+            </select>
+            <span style="font-size: 11.5px; color: var(--muted);">Status ao entrar via WhatsApp</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 14px;">
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 14px; margin-bottom: 4px;">
+            Chave de API WAHA (X-Api-Key)
+          </label>
+          <div style="position: relative;">
+            <input type="password" name="api_key" id="waha_api_key" value="{{ config_waha.api_key }}" class="input-vintage"
+                   placeholder="Opcional se configurado WAHA_API_KEY" style="width: 100%; box-sizing: border-box; padding-right: 42px; font-family: monospace;">
+            <button type="button" onclick="togglePasswordVisibility('waha_api_key')"
+                    style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px; color: var(--muted);"
+                    title="Exibir/Ocultar Segredo">
+              👁️
+            </button>
+          </div>
+          <span style="font-size: 12px; color: var(--muted);">Preencha se o WAHA foi iniciado com chave de proteção.</span>
+        </div>
+
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 14px; margin-bottom: 4px;">
+            Token Secreto de Validação do Webhook
+          </label>
+          <input type="text" name="webhook_secret" id="waha_webhook_secret" value="{{ config_waha.webhook_secret }}" class="input-vintage"
+                 placeholder="Ex: segredo_waha_123 (opcional)" style="width: 100%; box-sizing: border-box; font-family: monospace;">
+          <span style="font-size: 12px; color: var(--muted);">Chave enviada no header <code>X-Webhook-Secret</code> para validação de autenticidade.</span>
+        </div>
+
+        <!-- Botões de Ação -->
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 18px;">
+          <button type="submit" class="btn-primary" style="padding: 10px 20px; font-size: 14.5px; display: inline-flex; align-items: center; gap: 6px;">
+            <span>💾 Salvar Configurações</span>
+          </button>
+          <button type="button" onclick="testarWaha()" id="btn_testar_waha" class="btn-secondary" style="padding: 10px 18px; font-size: 14.5px; display: inline-flex; align-items: center; gap: 6px;">
+            <span>🧪 Testar Conexão</span>
+          </button>
+        </div>
+
+        <!-- Feedback de Teste de Conexão -->
+        <div id="waha_test_result" style="display: none; margin-top: 14px; padding: 12px 14px; border-radius: 8px; font-size: 13.5px; line-height: 1.4;"></div>
+      </form>
+    </div>
+
+    <!-- Diagnóstico, Pareamento QR e Webhook -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      
+      <!-- Card Pareamento QR & Sessão -->
+      <div class="card" style="padding: 22px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 22px;">📱</span>
+            <div>
+              <h3 class="font-serif" style="margin: 0; font-size: 18px; color: var(--primary); font-weight: 800;">
+                Pareamento &amp; Status do WhatsApp
+              </h3>
+              <p class="font-crimson" style="margin: 2px 0 0 0; font-size: 13.5px; color: var(--muted); font-style: italic;">
+                Conexão com o aparelho WhatsApp via QR Code
+              </p>
+            </div>
+          </div>
+          <button type="button" onclick="carregarQrCodeWaha()" class="btn-ghost" style="padding: 4px 8px; font-size: 12px; border: 1px solid var(--border);" title="Atualizar">
+            🔄 Atualizar
+          </button>
+        </div>
+
+        <!-- Container do QR Code Dinâmico -->
+        <div id="waha_qr_container" style="text-align: center; padding: 16px; background: rgba(0,0,0,0.02); border-radius: 12px; border: 1px dashed var(--border); margin-bottom: 14px;">
+          {% if waha_status.session_status == 'WORKING' %}
+            <div style="padding: 18px 10px;">
+              <p style="font-size: 38px; margin: 0;">✅</p>
+              <h4 style="margin: 8px 0 4px 0; color: #16a34a; font-size: 16px; font-weight: 800;">WhatsApp Conectado e Operacional!</h4>
+              <p style="font-size: 13.5px; color: var(--muted); margin: 0;">
+                A sessão <code>{{ config_waha.session_name }}</code> está ativa. Mensagens recebidas serão processadas automaticamente.
+              </p>
+            </div>
+          {% else %}
+            <div style="padding: 12px 10px;">
+              <p style="font-size: 32px; margin: 0;">📲</p>
+              <p style="font-size: 13.5px; color: var(--muted); margin: 6px 0 10px 0;">
+                Clique no botão abaixo para carregar o QR Code e escanear com seu celular.
+              </p>
+              <button type="button" onclick="carregarQrCodeWaha()" class="btn-secondary" style="font-size: 13px; padding: 6px 14px;">
+                Carregar QR Code Agora
+              </button>
+            </div>
+          {% endif %}
+        </div>
+
+        <!-- Botões de Ação de Sessão -->
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" onclick="controlarSessaoWaha('start')" class="btn-ghost" style="flex: 1; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border); font-weight: 700;">
+            ▶️ Iniciar Sessão
+          </button>
+          <button type="button" onclick="controlarSessaoWaha('restart')" class="btn-ghost" style="flex: 1; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border); font-weight: 700;">
+            🔄 Reiniciar Sessão
+          </button>
+          <button type="button" onclick="controlarSessaoWaha('stop')" class="btn-ghost" style="flex: 1; padding: 8px 10px; font-size: 13px; border: 1px solid var(--border); font-weight: 700; color: var(--danger);">
+            ⏹️ Parar Sessão
+          </button>
+        </div>
+      </div>
+
+      <!-- Card Configuração de Webhook -->
+      <div class="card" style="padding: 22px;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+          <span style="font-size: 20px;">🔗</span>
+          <div>
+            <h3 class="font-serif" style="margin: 0; font-size: 17px; color: var(--primary); font-weight: 800;">
+              URL do Webhook do Ateliê
+            </h3>
+            <p class="font-crimson" style="margin: 2px 0 0 0; font-size: 13px; color: var(--muted); font-style: italic;">
+              Configure esta URL no seu servidor WAHA para envio de eventos de mensagens
+            </p>
+          </div>
+        </div>
+
+        <div style="position: relative; margin-bottom: 10px;">
+          <input type="text" id="waha_webhook_url_input" value="{{ request.host_url.rstrip('/') }}/api/waha/webhook" readonly class="input-vintage"
+                 style="width: 100%; box-sizing: border-box; padding-right: 40px; font-family: monospace; font-size: 13px; background: rgba(0,0,0,0.03);">
+          <button type="button" onclick="copyToClipboard('waha_webhook_url_input')" title="Copiar URL"
+                  style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px;">
+            📋
+          </button>
+        </div>
+
+        <div style="font-size: 12.5px; color: var(--muted); line-height: 1.5; background: rgba(0,0,0,0.02); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);">
+          <strong>💡 Instruções WAHA:</strong> No container Docker do WAHA, configure a variável de ambiente:
+          <code style="display:block; margin-top:4px; padding: 4px 6px; background: rgba(0,0,0,0.05); border-radius: 4px;">WHATSAPP_HOOK_URL={{ request.host_url.rstrip('/') }}/api/waha/webhook</code>
+          ou configure via API com o evento <code>message</code>.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ferramentas de Teste: Envio de Mensagem & Simulação de Pedido -->
+  <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; margin-bottom: 24px;">
+    
+    <!-- Teste 1: Disparo de Mensagem -->
+    <div class="card" style="padding: 22px;">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span style="font-size: 22px;">✉️</span>
+        <div>
+          <h3 class="font-serif" style="margin: 0; font-size: 18px; color: var(--primary); font-weight: 800;">
+            Enviar Mensagem de Teste
+          </h3>
+          <p class="font-crimson" style="margin: 2px 0 0 0; font-size: 13.5px; color: var(--muted); font-style: italic;">
+            Dispare uma mensagem direta para qualquer número para testar o envio
+          </p>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 12px;">
+        <label style="display: block; font-weight: 700; color: var(--primary); font-size: 13.5px; margin-bottom: 4px;">
+          Telefone do Destinatário (com DDD)
+        </label>
+        <input type="text" id="teste_destinatario_tel" class="input-vintage" placeholder="Ex: 11988887777 ou 5511988887777" style="width: 100%; box-sizing: border-box; font-family: monospace;">
+      </div>
+
+      <div style="margin-bottom: 14px;">
+        <label style="display: block; font-weight: 700; color: var(--primary); font-size: 13.5px; margin-bottom: 4px;">
+          Mensagem de Teste
+        </label>
+        <input type="text" id="teste_destinatario_msg" class="input-vintage" value="Olá! Esta é uma mensagem de teste da integração WAHA do Ateliê Web. ✨" style="width: 100%; box-sizing: border-box;">
+      </div>
+
+      <button type="button" onclick="enviarMensagemTesteWaha()" id="btn_enviar_teste_waha" class="btn-secondary" style="padding: 9px 18px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px;">
+        <span>🚀 Enviar Mensagem de Teste</span>
+      </button>
+
+      <div id="waha_send_test_result" style="display: none; margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 13px;"></div>
+    </div>
+
+    <!-- Teste 2: Simulador Instantâneo de Pedido WhatsApp -->
+    <div class="card" style="padding: 22px; background: linear-gradient(135deg, rgba(124,61,18,0.03), rgba(37,211,102,0.03));">
+      <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 14px;">
+        <span style="font-size: 22px;">⚡</span>
+        <div>
+          <h3 class="font-serif" style="margin: 0; font-size: 18px; color: var(--primary); font-weight: 800;">
+            Simulador de Pedido WhatsApp
+          </h3>
+          <p class="font-crimson" style="margin: 2px 0 0 0; font-size: 13.5px; color: var(--muted); font-style: italic;">
+            Simule um cliente pedindo pelo WhatsApp e veja aparecer na hora no site
+          </p>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+        <div>
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 13px; margin-bottom: 4px;">
+            Nome do Cliente
+          </label>
+          <input type="text" id="sim_cliente_nome" value="Camila Albuquerque" class="input-vintage" style="width: 100%; box-sizing: border-box;">
+        </div>
+
+        <div>
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 13px; margin-bottom: 4px;">
+            Telefone
+          </label>
+          <input type="text" id="sim_cliente_tel" value="11987654321" class="input-vintage" style="width: 100%; box-sizing: border-box; font-family: monospace;">
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 14px;">
+        <div>
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 13px; margin-bottom: 4px;">
+            Produto Desejado
+          </label>
+          <select id="sim_produto_id" class="input-vintage" style="width: 100%; box-sizing: border-box;">
+            {% for p in produtos %}
+              <option value="{{ p.id }}">{{ p.emoji or '👜' }} {{ p.nome }} ({{ p.preco_venda|moeda if p.preco_venda else '' }})</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div>
+          <label style="display: block; font-weight: 700; color: var(--primary); font-size: 13px; margin-bottom: 4px;">
+            Quantidade
+          </label>
+          <input type="number" id="sim_quantidade" value="1" min="1" max="50" class="input-vintage" style="width: 100%; box-sizing: border-box;">
+        </div>
+      </div>
+
+      <button type="button" onclick="simularPedidoWaha()" id="btn_simular_pedido_waha" class="btn-primary" style="padding: 10px 20px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px;">
+        <span>⚡ Simular Pedido via WhatsApp</span>
+      </button>
+
+      <div id="waha_sim_result" style="display: none; margin-top: 12px; padding: 10px 12px; border-radius: 8px; font-size: 13px;"></div>
+    </div>
+  </div>
+
+  <!-- Tabela de Auditoria de Mensagens Recentes do WhatsApp -->
+  <div class="card" style="padding: 22px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 10px;">
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="font-size: 22px;">📜</span>
+        <div>
+          <h3 class="font-serif" style="margin: 0; font-size: 18px; color: var(--primary); font-weight: 800;">
+            Histórico &amp; Auditoria de Mensagens do WhatsApp
+          </h3>
+          <p class="font-crimson" style="margin: 2px 0 0 0; font-size: 13.5px; color: var(--muted); font-style: italic;">
+            Últimas interações de clientes e respostas automáticas registradas
+          </p>
+        </div>
+      </div>
+
+      <span class="badge" style="background: rgba(0,0,0,0.05); color: var(--primary); font-weight: 700; padding: 4px 10px; border-radius: 10px;">
+        {{ waha_mensagens|length }} registro(s)
+      </span>
+    </div>
+
+    {% if not waha_mensagens %}
+      <div style="text-align: center; padding: 30px; color: var(--muted); font-style: italic;">
+        💬 Nenhuma mensagem do WhatsApp registrada ainda. Quando clientes enviarem mensagens pelo WhatsApp ou você usar o simulador acima, elas aparecerão aqui.
+      </div>
+    {% else %}
+      <div style="overflow-x: auto;">
+        <table class="table-vintage" style="width: 100%; border-collapse: collapse; font-size: 13.5px;">
+          <thead>
+            <tr style="border-bottom: 2px solid var(--border); text-align: left;">
+              <th style="padding: 10px 12px;">Data / Hora</th>
+              <th style="padding: 10px 12px;">Direção</th>
+              <th style="padding: 10px 12px;">Contato / Tel</th>
+              <th style="padding: 10px 12px;">Mensagem</th>
+              <th style="padding: 10px 12px;">Evento</th>
+              <th style="padding: 10px 12px;">Pedido</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for m in waha_mensagens %}
+              <tr style="border-bottom: 1px solid var(--border);">
+                <td style="padding: 10px 12px; font-family: monospace; font-size: 12.5px; color: var(--muted); white-space: nowrap;">
+                  {{ m.created_at[:16]|replace('T', ' ') if m.created_at else '' }}
+                </td>
+                <td style="padding: 10px 12px; white-space: nowrap;">
+                  {% if m.direcao == 'incoming' %}
+                    <span style="background: rgba(59,130,246,0.12); color: #2563eb; font-weight: 700; padding: 2px 8px; border-radius: 8px; font-size: 12px;">
+                      📥 Recebida
+                    </span>
+                  {% else %}
+                    <span style="background: rgba(34,197,94,0.12); color: #16a34a; font-weight: 700; padding: 2px 8px; border-radius: 8px; font-size: 12px;">
+                      📤 Enviada
+                    </span>
+                  {% endif %}
+                </td>
+                <td style="padding: 10px 12px; white-space: nowrap;">
+                  <strong>{{ m.nome_contato or 'Cliente' }}</strong><br>
+                  <span style="font-size: 11.5px; color: var(--muted); font-family: monospace;">{{ m.telefone }}</span>
+                </td>
+                <td style="padding: 10px 12px; max-width: 320px; word-break: break-word;">
+                  {{ m.conteudo }}
+                </td>
+                <td style="padding: 10px 12px; white-space: nowrap;">
+                  <span class="badge" style="background: rgba(0,0,0,0.04); color: var(--text); font-size: 11.5px; padding: 2px 8px; border-radius: 8px;">
+                    {{ m.tipo_evento }}
+                  </span>
+                </td>
+                <td style="padding: 10px 12px; white-space: nowrap;">
+                  {% if m.pedido_id %}
+                    <a href="{{ url_for('pedidos') }}" style="color: var(--primary); font-weight: 700; text-decoration: underline; font-size: 12.5px;">
+                      🧾 Ver Pedido #{{ m.pedido_id[:8] }}
+                    </a>
+                  {% else %}
+                    <span style="color: var(--muted); font-size: 12px;">—</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
 <script>
   function switchDevTab(tabId) {
     document.querySelectorAll('.devtab-panel').forEach(el => el.style.display = 'none');
@@ -970,6 +1417,213 @@
       resultBox.style.border = '1px solid rgba(239, 68, 68, 0.4)';
       resultBox.style.color = '#b91c1c';
       resultBox.innerHTML = '<strong>❌ Erro de Comunicação:</strong> Não foi possível obter resposta do servidor (' + err + ').';
+    });
+  }
+
+  // ── FUNÇÕES DE SUPORTE WAHA (WHATSAPP) ───────────────────────────────────
+  function testarWaha() {
+    const btn = document.getElementById('btn_testar_waha');
+    const resultBox = document.getElementById('waha_test_result');
+    const apiUrl = document.getElementById('waha_api_url') ? document.getElementById('waha_api_url').value.trim() : '';
+    const sessionName = document.getElementById('waha_session_name') ? document.getElementById('waha_session_name').value.trim() : '';
+    const apiKey = document.getElementById('waha_api_key') ? document.getElementById('waha_api_key').value.trim() : '';
+
+    btn.disabled = true;
+    btn.innerHTML = '<span>Testando Conexão... ⏳</span>';
+    resultBox.style.display = 'block';
+    resultBox.style.background = 'rgba(59, 130, 246, 0.1)';
+    resultBox.style.border = '1px solid rgba(59, 130, 246, 0.3)';
+    resultBox.style.color = '#1d4ed8';
+    resultBox.innerHTML = 'Conectando ao servidor WAHA em ' + (apiUrl || 'http://localhost:3000') + '...';
+
+    fetch('{{ url_for("developer_waha_testar") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_url: apiUrl,
+        session_name: sessionName,
+        api_key: apiKey
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🧪 Testar Conexão</span>';
+      if (data.waha_online && (data.session_status === 'WORKING' || data.session_status === 'SCAN_QR_CODE')) {
+        resultBox.style.background = 'rgba(16, 185, 129, 0.12)';
+        resultBox.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+        resultBox.style.color = '#047857';
+        resultBox.innerHTML = '<strong>' + data.message + '</strong>';
+        if (data.session_status === 'SCAN_QR_CODE') {
+          carregarQrCodeWaha();
+        }
+      } else if (data.waha_online) {
+        resultBox.style.background = 'rgba(234, 179, 8, 0.15)';
+        resultBox.style.border = '1px solid rgba(234, 179, 8, 0.4)';
+        resultBox.style.color = '#b45309';
+        resultBox.innerHTML = '<strong>Servidor Online:</strong> ' + data.message;
+      } else {
+        resultBox.style.background = 'rgba(239, 68, 68, 0.12)';
+        resultBox.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        resultBox.style.color = '#b91c1c';
+        resultBox.innerHTML = '<strong>❌ Falha na Conexão:</strong> ' + data.message;
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🧪 Testar Conexão</span>';
+      resultBox.style.background = 'rgba(239, 68, 68, 0.12)';
+      resultBox.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+      resultBox.style.color = '#b91c1c';
+      resultBox.innerHTML = '<strong>❌ Erro de Comunicação:</strong> ' + err;
+    });
+  }
+
+  function carregarQrCodeWaha() {
+    const container = document.getElementById('waha_qr_container');
+    if (!container) return;
+    container.innerHTML = '<div style="padding:20px; color:var(--muted);">Obtendo QR Code do WhatsApp... ⏳</div>';
+
+    fetch('{{ url_for("developer_waha_qr") }}')
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok && data.data_url) {
+        container.innerHTML = `
+          <div style="padding:10px;">
+            <p style="font-weight:700; color:var(--primary); margin:0 0 8px 0;">Escaneie o QR Code abaixo com seu WhatsApp:</p>
+            <div style="display:inline-block; padding:10px; background:white; border-radius:12px; box-shadow:0 4px 14px rgba(0,0,0,0.08);">
+              <img src="${data.data_url}" alt="WhatsApp QR Code" style="max-width:240px; height:auto; display:block; border-radius:6px;">
+            </div>
+            <p style="font-size:12.5px; color:var(--muted); margin:8px 0 0 0;">
+              No celular: <strong>WhatsApp > Aparelhos Conectados > Conectar Aparelho</strong>
+            </p>
+          </div>
+        `;
+      } else {
+        container.innerHTML = `
+          <div style="padding:16px;">
+            <p style="font-size:28px; margin:0;">ℹ️</p>
+            <p style="font-size:13.5px; color:var(--muted); margin:6px 0 10px 0;">${data.error || 'Nenhum QR Code pendente no momento (ou sessão já conectada).'}</p>
+            <button type="button" onclick="testarWaha()" class="btn-ghost" style="font-size:12.5px; padding:4px 12px; border:1px solid var(--border);">Verificar Status</button>
+          </div>
+        `;
+      }
+    })
+    .catch(err => {
+      container.innerHTML = '<div style="padding:16px; color:var(--danger);">Não foi possível carregar o QR Code: ' + err + '</div>';
+    });
+  }
+
+  function controlarSessaoWaha(acao) {
+    if (!confirm('Deseja enviar o comando "' + acao + '" para a sessão do WhatsApp?')) return;
+    fetch('{{ url_for("developer_waha_sessao_acao") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ acao: acao })
+    })
+    .then(r => r.json())
+    .then(data => {
+      alert(data.message || (data.ok ? 'Comando executado com sucesso!' : ('Falha: ' + (data.error || 'Erro'))));
+      testarWaha();
+    })
+    .catch(err => alert('Erro: ' + err));
+  }
+
+  function enviarMensagemTesteWaha() {
+    const tel = document.getElementById('teste_destinatario_tel').value.trim();
+    const msg = document.getElementById('teste_destinatario_msg').value.trim();
+    const btn = document.getElementById('btn_enviar_teste_waha');
+    const box = document.getElementById('waha_send_test_result');
+
+    if (!tel) {
+      alert('Informe o número de telefone com DDD para envio.');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = '<span>Enviando... ⏳</span>';
+    box.style.display = 'none';
+
+    fetch('{{ url_for("developer_waha_enviar_teste") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telefone: tel, mensagem: msg })
+    })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🚀 Enviar Mensagem de Teste</span>';
+      box.style.display = 'block';
+      if (data.success) {
+        box.style.background = 'rgba(16, 185, 129, 0.12)';
+        box.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+        box.style.color = '#047857';
+        box.innerHTML = '<strong>✅ Enviado com Sucesso:</strong> ' + data.message;
+      } else {
+        box.style.background = 'rgba(239, 68, 68, 0.12)';
+        box.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        box.style.color = '#b91c1c';
+        box.innerHTML = '<strong>❌ Falha no Envio:</strong> ' + data.message;
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>🚀 Enviar Mensagem de Teste</span>';
+      box.style.display = 'block';
+      box.style.background = 'rgba(239, 68, 68, 0.12)';
+      box.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+      box.style.color = '#b91c1c';
+      box.innerHTML = '<strong>❌ Erro de Comunicação:</strong> ' + err;
+    });
+  }
+
+  function simularPedidoWaha() {
+    const cliente = document.getElementById('sim_cliente_nome').value.trim();
+    const tel = document.getElementById('sim_cliente_tel').value.trim();
+    const prodId = document.getElementById('sim_produto_id').value;
+    const qtd = document.getElementById('sim_quantidade').value;
+    const btn = document.getElementById('btn_simular_pedido_waha');
+    const box = document.getElementById('waha_sim_result');
+
+    btn.disabled = true;
+    btn.innerHTML = '<span>Simulando Pedido... ⏳</span>';
+    box.style.display = 'none';
+
+    fetch('{{ url_for("developer_waha_simular_pedido") }}', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cliente: cliente,
+        telefone: tel,
+        produto_id: prodId,
+        quantidade: qtd
+      })
+    })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>⚡ Simular Pedido via WhatsApp</span>';
+      box.style.display = 'block';
+      if (data.success) {
+        box.style.background = 'rgba(16, 185, 129, 0.12)';
+        box.style.border = '1px solid rgba(16, 185, 129, 0.4)';
+        box.style.color = '#047857';
+        box.innerHTML = '<strong>✅ Sucesso:</strong> ' + data.message + ' <br><a href="{{ url_for("pedidos") }}" style="color:#047857; font-weight:700; text-decoration:underline; display:inline-block; margin-top:6px;">👉 Ir para a Aba Pedidos para Conferir</a>';
+      } else {
+        box.style.background = 'rgba(239, 68, 68, 0.12)';
+        box.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        box.style.color = '#b91c1c';
+        box.innerHTML = '<strong>❌ Falha na Simulação:</strong> ' + (data.error || 'Erro desconhecido');
+      }
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.innerHTML = '<span>⚡ Simular Pedido via WhatsApp</span>';
+      box.style.display = 'block';
+      box.style.background = 'rgba(239, 68, 68, 0.12)';
+      box.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+      box.style.color = '#b91c1c';
+      box.innerHTML = '<strong>❌ Erro:</strong> ' + err;
     });
   }
 </script>

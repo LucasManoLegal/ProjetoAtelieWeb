@@ -3,24 +3,47 @@
 {% set subtitulo = pedidos|length ~ " pedido(s)" %}
 {% block conteudo %}
 
-<div style="display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap;">
+<div style="display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; align-items:center;">
   <a href="{{ url_for('pedido_novo') }}" class="btn-primary" style="flex:1; min-width:160px; text-align:center;">➕ Novo Pedido</a>
   <button type="button" class="btn-scan" style="padding:10px 16px; font-size:15px;" onclick="abrirScanner(null, (gtin) => { window.location.href = '{{ url_for('pedido_novo') }}?gtin=' + encodeURIComponent(gtin); })">
     📷 Ler Código da Bolsa
   </button>
+  <div style="display:inline-flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted); background:rgba(0,0,0,0.03); padding:8px 12px; border-radius:10px; border:1px solid var(--border);">
+    <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e; box-shadow:0 0 8px #22c55e;"></span>
+    <span>Auto-atualização WhatsApp ativa</span>
+  </div>
+</div>
+
+<!-- Toast Flutuante de Notificação de Novo Pedido -->
+<div id="live_order_toast" style="display:none; position:fixed; top:20px; right:20px; z-index:9999; background:linear-gradient(135deg, #1f2937, #111827); color:white; padding:16px 20px; border-radius:14px; box-shadow:0 10px 30px rgba(0,0,0,0.25); border:1px solid rgba(37,211,102,0.4); max-width:360px; animation:slideIn 0.3s ease;">
+  <div style="display:flex; align-items:flex-start; gap:12px;">
+    <span style="font-size:26px; line-height:1;">📱</span>
+    <div style="flex:1;">
+      <div style="font-weight:800; color:#4ade80; font-size:15px; margin-bottom:2px;">Novo Pedido via WhatsApp!</div>
+      <div id="toast_order_desc" style="font-size:13.5px; color:#f3f4f6; margin-bottom:8px;"></div>
+      <div style="display:flex; gap:8px;">
+        <button type="button" onclick="window.location.reload()" style="background:#22c55e; color:white; border:none; padding:4px 12px; border-radius:6px; font-weight:700; font-size:12px; cursor:pointer;">
+          Atualizar Lista
+        </button>
+        <button type="button" onclick="document.getElementById('live_order_toast').style.display='none'" style="background:transparent; color:#9ca3af; border:1px solid #4b5563; padding:4px 8px; border-radius:6px; font-size:12px; cursor:pointer;">
+          Fechar
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 {% if not pedidos %}
 <div class="card" style="padding:30px; text-align:center;">
   <p style="font-size:36px;">🧾</p>
   <p class="font-crimson" style="color:var(--muted); font-style:italic; margin-top:8px;">
-    Nenhum pedido registrado ainda.
+    Nenhum pedido registrado ainda. Pedidos feitos pelo WhatsApp aparecerão aqui automaticamente!
   </p>
 </div>
 {% endif %}
 
 {% for p in pedidos %}
-<div class="card card-ornament" style="margin-bottom:14px; overflow:hidden;">
+<div class="card card-ornament" style="margin-bottom:14px; overflow:hidden; {% if p.origem == 'whatsapp' %}border-left: 4px solid #25D366;{% endif %}">
   <div style="padding:14px 16px;">
     <div style="display:flex; gap:14px; align-items:flex-start;">
       <div style="width:56px; height:56px; border-radius:12px; background:var(--accent-lt);
@@ -28,7 +51,14 @@
         <span style="font-size:26px;">{{ p.produto_emoji }}</span>
       </div>
       <div style="flex:1; min-width:0;">
-        <p class="font-serif" style="font-size:17px; font-weight:700; color:var(--text); line-height:1.2;">{{ p.cliente }}</p>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <p class="font-serif" style="font-size:17px; font-weight:700; color:var(--text); line-height:1.2; margin:0;">{{ p.cliente }}</p>
+          {% if p.origem == 'whatsapp' or 'whatsapp' in (p.observacoes|lower) %}
+            <span style="background: rgba(37,211,102,0.14); color: #15803d; border: 1px solid rgba(37,211,102,0.3); font-size: 11.5px; font-weight: 700; padding: 2px 7px; border-radius: 8px; display: inline-flex; align-items: center; gap: 4px;">
+              📱 WhatsApp
+            </span>
+          {% endif %}
+        </div>
         <p class="font-crimson" style="color:var(--muted); font-style:italic; font-size:15px; margin-top:3px;">
           {{ p.quantidade }}x {{ p.produto_nome }} · {{ p.data_pedido }}
         </p>
@@ -42,8 +72,8 @@
       </div>
     </div>
 
-    <div style="display:flex; gap:8px; margin-top:12px; align-items:center;">
-      <form method="post" action="{{ url_for('pedido_status', pedido_id=p.id) }}" style="flex:1; display:flex; gap:8px;">
+    <div style="display:flex; gap:8px; margin-top:12px; align-items:center; flex-wrap:wrap;">
+      <form method="post" action="{{ url_for('pedido_status', pedido_id=p.id) }}" style="flex:1; display:flex; gap:8px; min-width:200px;">
         <select name="status" class="input-vintage" style="flex:1; font-size:15px !important; padding:10px 12px;">
           {% for s in status_lista %}
           <option value="{{ s }}" {% if s == p.status %}selected{% endif %}>{{ s }}</option>
@@ -51,6 +81,11 @@
         </select>
         <button class="btn-secondary" style="font-size:15px !important;">Atualizar</button>
       </form>
+      {% if p.telefone_cliente %}
+        <a href="https://wa.me/{{ p.telefone_cliente|replace('+', '')|replace(' ', '')|replace('-', '') }}" target="_blank" class="btn-ghost" style="padding:10px 12px; font-size:14px; text-decoration:none; color:#15803d; border:1px solid rgba(37,211,102,0.3); background:rgba(37,211,102,0.08); display:inline-flex; align-items:center; gap:5px;" title="Conversar com o cliente no WhatsApp">
+          💬 Conversar
+        </a>
+      {% endif %}
       <form method="post" action="{{ url_for('pedido_excluir', pedido_id=p.id) }}" onsubmit="return confirm('Remover pedido de {{ p.cliente }}?')">
         <button class="btn-ghost" style="padding:10px 12px;">🗑️</button>
       </form>
@@ -63,4 +98,58 @@
   </div>
 </div>
 {% endfor %}
+
+{% block scripts %}
+<script>
+  // ── LIVE POLLING: Deteção de novos pedidos em tempo real ──────────────────
+  let totalPedidosInicial = {{ pedidos|length }};
+  let ultimoPedidoIdInicial = "{{ pedidos[0].id if pedidos else '' }}";
+
+  function tocarAlertaSuave() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.12); // A5
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.35);
+    } catch(e) {}
+  }
+
+  function verificarNovosPedidos() {
+    fetch('/api/pedidos/ultimos')
+    .then(r => r.json())
+    .then(data => {
+      if (data && typeof data.count === 'number') {
+        // Se a contagem aumentou ou se o último ID mudou
+        if (data.count > totalPedidosInicial || (ultimoPedidoIdInicial && data.latest_id && data.latest_id !== ultimoPedidoIdInicial)) {
+          tocarAlertaSuave();
+          const toast = document.getElementById('live_order_toast');
+          const desc = document.getElementById('toast_order_desc');
+          if (toast && desc) {
+            const cliente = data.latest_cliente || 'Cliente WhatsApp';
+            const produto = data.latest_produto || 'Produto do Ateliê';
+            desc.innerHTML = `<strong>${cliente}</strong> acabou de pedir <strong>${produto}</strong>.`;
+            toast.style.display = 'block';
+          }
+          // Recarrega automaticamente após 2 segundos para exibir o pedido
+          setTimeout(() => {
+            window.location.reload();
+          }, 2200);
+        }
+      }
+    })
+    .catch(() => {});
+  }
+
+  // Verifica a cada 4.5 segundos
+  setInterval(verificarNovosPedidos, 4500);
+</script>
+{% endblock %}
 {% endblock %}

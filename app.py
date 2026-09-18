@@ -50,6 +50,7 @@ import db
 from db import get_db_connection, get_db_stats, test_db_connection, is_postgres_active
 import cloudinary_service
 from cloudinary_service import upload_imagem, deletar_imagem
+import waha_service
 
 # Interceptor transparente de conexão de banco:
 _orig_sqlite3_connect = sqlite3.connect
@@ -881,6 +882,52 @@ def init_db(force=False):
         )
         """
     )
+
+    # configuracoes_waha table: armazena configurações da API WAHA (WhatsApp HTTP API)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS configuracoes_waha (
+            id TEXT PRIMARY KEY,
+            api_url TEXT DEFAULT 'http://localhost:3000',
+            session_name TEXT DEFAULT 'default',
+            api_key TEXT DEFAULT '',
+            webhook_secret TEXT DEFAULT '',
+            ativo INTEGER DEFAULT 1,
+            auto_reply INTEGER DEFAULT 1,
+            notificar_admin INTEGER DEFAULT 0,
+            status_padrao TEXT DEFAULT 'Pendente',
+            updated_at TEXT
+        )
+        """
+    )
+
+    # waha_mensagens table: armazena mensagens recebidas e enviadas via WhatsApp para auditoria
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS waha_mensagens (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT,
+            telefone TEXT,
+            nome_contato TEXT,
+            direcao TEXT,
+            conteudo TEXT,
+            tipo_evento TEXT,
+            pedido_id TEXT,
+            raw_payload TEXT,
+            created_at TEXT
+        )
+        """
+    )
+
+    # Migração segura para colunas de rastreamento do WhatsApp na tabela pedidos
+    try:
+        cur.execute("ALTER TABLE pedidos ADD COLUMN origem TEXT DEFAULT 'web'")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE pedidos ADD COLUMN telefone_cliente TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     # Sincroniza variáveis de ambiente a partir do banco caso já existam configuradas
     try:
@@ -1823,7 +1870,7 @@ if os.environ.get('RECREATE_DB', '').lower() in ('1','true','yes'):
 @app.before_request
 def require_login():
     # Allow these endpoints unauthenticated
-    allowed = {"login", "static", "em_construcao", "uploaded_file", "auth_google_login", "auth_google_callback"}
+    allowed = {"login", "static", "em_construcao", "uploaded_file", "auth_google_login", "auth_google_callback", "waha_webhook", "api_pedidos_ultimos"}
     if request.endpoint is None:
         return
     if request.endpoint in allowed:
@@ -3914,6 +3961,9 @@ def pedidos():
         conn.close()
         res = []
         for r in rows:
+            keys = r.keys() if hasattr(r, 'keys') else []
+            origem = r["origem"] if "origem" in keys and r["origem"] else ("whatsapp" if "whatsapp" in str(r["observacoes"] or "").lower() else "web")
+            tel = r["telefone_cliente"] if "telefone_cliente" in keys and r["telefone_cliente"] else ""
             res.append({
                 "id": r["id"],
                 "cliente": r["cliente"],
@@ -3928,10 +3978,17 @@ def pedidos():
                 "data_pedido": r["data_pedido"],
                 "data_pedido_iso": r["data_pedido_iso"],
                 "observacoes": r["observacoes"],
+                "origem": origem,
+                "telefone_cliente": tel,
             })
         return render_template("pedidos.html", pedidos=res, status_lista=STATUS_PEDIDO, status_badge=STATUS_PEDIDO_BADGE)
 
     lista = carregar_json("pedidos.json")
+    for p in lista:
+        if "origem" not in p:
+            p["origem"] = "whatsapp" if "whatsapp" in str(p.get("observacoes", "")).lower() else "web"
+        if "telefone_cliente" not in p:
+            p["telefone_cliente"] = ""
     lista_ordenada = sorted(lista, key=lambda p: p.get("data_pedido_iso", ""), reverse=True)
     return render_template("pedidos.html", pedidos=lista_ordenada, status_lista=STATUS_PEDIDO,
                             status_badge=STATUS_PEDIDO_BADGE)
@@ -6512,6 +6569,15 @@ def developer_dashboard():
         "db_mode": "PostgreSQL (Servidor)" if is_postgres_active() else ("SQLite WAL" if USE_SQLITE else "JSON Fallback"),
     }
 
+    # WAHA WhatsApp
+    config_waha = waha_service.obter_configuracoes_waha()
+    waha_status = waha_service.testar_conexao_waha(
+        config_waha.get("api_url"),
+        config_waha.get("api_key"),
+        config_waha.get("session_name")
+    )
+    waha_mensagens = waha_service.obter_mensagens_recentes(limit=30)
+
     return render_template(
         "developer.html",
         aba_ativa=aba_ativa,
@@ -6526,6 +6592,10 @@ def developer_dashboard():
         diagnostics=diagnostics,
         config_cloudinary=obter_configuracoes_cloudinary(),
         cloudinary_status=cloudinary_service.testar_conexao_cloudinary(),
+        config_waha=config_waha,
+        waha_status=waha_status,
+        waha_mensagens=waha_mensagens,
+        produtos=carregar_produtos(),
     )
 
 
@@ -6615,6 +6685,187 @@ def developer_cloudinary_testar():
         "success": status.get("ok", False),
         "message": status.get("message") or status.get("error", "Erro ao conectar"),
         "status": status.get("status", "")
+    })
+
+
+# ── ROTAS DEVELOPER: WHATSAPP (WAHA API) ──────────────────────────────────────
+
+@app.route("/developer/waha/salvar", methods=["POST"])
+@requires_developer
+def developer_waha_salvar():
+    cfg = {
+        "api_url": request.form.get("api_url", "").strip(),
+        "session_name": request.form.get("session_name", "default").strip(),
+        "api_key": request.form.get("api_key", "").strip(),
+        "webhook_secret": request.form.get("webhook_secret", "").strip(),
+        "ativo": 1 if request.form.get("ativo") == "1" else 0,
+        "auto_reply": 1 if request.form.get("auto_reply") == "1" else 0,
+        "notificar_admin": 1 if request.form.get("notificar_admin") == "1" else 0,
+        "status_padrao": request.form.get("status_padrao", "Pendente").strip(),
+    }
+    waha_service.salvar_configuracoes_waha(cfg)
+
+    # Auditoria
+    if USE_SQLITE:
+        try:
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO audits (id, actor_id, actor_username, target_user_id, action, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), session.get("user_id"), g.user.get("username") if g.get("user") else "Developer", None, "update_waha_config", f"api_url={cfg['api_url']};session={cfg['session_name']};ativo={cfg['ativo']};auto_reply={cfg['auto_reply']}", agora().isoformat())
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+
+    flash("Configurações da API WAHA (WhatsApp) salvas com sucesso no Developer Hub! ✅")
+    return redirect(url_for("developer_dashboard", tab="waha"))
+
+
+@app.route("/developer/waha/testar", methods=["POST"])
+@requires_developer
+def developer_waha_testar():
+    data = request.get_json(silent=True) or {}
+    api_url = data.get("api_url", "").strip() or None
+    api_key = data.get("api_key", "").strip() or None
+    session_name = data.get("session_name", "").strip() or None
+
+    status = waha_service.testar_conexao_waha(api_url, api_key, session_name)
+    return jsonify({
+        "success": status.get("ok", False),
+        "waha_online": status.get("waha_online", False),
+        "session_status": status.get("session_status", "UNKNOWN"),
+        "message": status.get("message", ""),
+        "sessions": status.get("sessions", []),
+    })
+
+
+@app.route("/developer/waha/qr", methods=["GET"])
+@requires_developer
+def developer_waha_qr():
+    qr_res = waha_service.obter_qr_code()
+    return jsonify(qr_res)
+
+
+@app.route("/developer/waha/sessao/acao", methods=["POST"])
+@requires_developer
+def developer_waha_sessao_acao():
+    data = request.get_json(silent=True) or {}
+    acao = data.get("acao", "start").strip()
+    res = waha_service.controlar_sessao(acao)
+    return jsonify(res)
+
+
+@app.route("/developer/waha/enviar-teste", methods=["POST"])
+@requires_developer
+def developer_waha_enviar_teste():
+    data = request.get_json(silent=True) or {}
+    telefone = data.get("telefone", "").strip()
+    mensagem = data.get("mensagem", "").strip() or "Teste de integração WAHA Ateliê Web! ✨"
+
+    if not telefone:
+        return jsonify({"success": False, "message": "Informe o número de telefone de destino."})
+
+    res = waha_service.enviar_mensagem_whatsapp(telefone, mensagem)
+    if res.get("ok"):
+        waha_service.salvar_log_mensagem(
+            chat_id=waha_service.normalizar_chat_id(telefone),
+            telefone=re.sub(r"\D", "", telefone),
+            nome_contato="Teste Developer Hub",
+            direcao="outgoing",
+            conteudo=mensagem,
+            tipo_evento="mensagem_teste",
+        )
+        return jsonify({"success": True, "message": f"Mensagem enviada com sucesso para {telefone}!"})
+    return jsonify({"success": False, "message": f"Falha ao enviar mensagem: {res.get('error', 'Erro desconhecido')}"})
+
+
+@app.route("/developer/waha/simular-pedido", methods=["POST"])
+@requires_developer
+def developer_waha_simular_pedido():
+    data = request.get_json(silent=True) or {}
+    cliente = data.get("cliente", "Maria Teste WhatsApp").strip()
+    telefone = data.get("telefone", "5511988887777").strip()
+    produto_id = data.get("produto_id", "").strip()
+    try:
+        quantidade = int(data.get("quantidade", 1) or 1)
+    except Exception:
+        quantidade = 1
+    msg = data.get("mensagem", "").strip()
+
+    res = waha_service.simular_pedido_whatsapp(
+        cliente_nome=cliente,
+        cliente_telefone=telefone,
+        produto_id=produto_id,
+        quantidade=quantidade,
+        mensagem_simulada=msg,
+    )
+    return jsonify(res)
+
+
+# ── ROTAS PÚBLICAS: WEBHOOK WAHA & LIVE CHECK PEDIDOS ─────────────────────────
+
+@app.route("/api/waha/webhook", methods=["POST"])
+@app.route("/webhook/waha", methods=["POST"])
+def waha_webhook():
+    payload = request.get_json(silent=True, force=True) or {}
+    headers = dict(request.headers)
+    res = waha_service.processar_webhook_waha(payload, headers=headers)
+    status_code = res.get("code", 200) if isinstance(res, dict) and "code" in res else 200
+    return jsonify(res), status_code
+
+
+@app.route("/api/pedidos/ultimos", methods=["GET"])
+def api_pedidos_ultimos():
+    """Retorna contagem total e detalhes do pedido mais recente para detecção automática em tempo real."""
+    count = 0
+    latest_id = ""
+    latest_time = ""
+    latest_cliente = ""
+    latest_produto = ""
+    latest_origem = "web"
+
+    try:
+        if USE_SQLITE:
+            init_db()
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) AS total FROM pedidos")
+            r_c = cur.fetchone()
+            count = r_c["total"] if r_c else 0
+            cur.execute("SELECT * FROM pedidos ORDER BY created_at DESC, data_pedido_iso DESC LIMIT 1")
+            r_last = cur.fetchone()
+            if r_last:
+                keys = r_last.keys() if hasattr(r_last, 'keys') else []
+                latest_id = r_last["id"] if "id" in keys else ""
+                latest_time = r_last["created_at"] if "created_at" in keys and r_last["created_at"] else (r_last["data_pedido_iso"] if "data_pedido_iso" in keys else "")
+                latest_cliente = r_last["cliente"] if "cliente" in keys else ""
+                latest_produto = r_last["produto_nome"] if "produto_nome" in keys else ""
+                latest_origem = r_last["origem"] if "origem" in keys and r_last["origem"] else ("whatsapp" if "whatsapp" in str(r_last["observacoes"] or "").lower() else "web")
+            conn.close()
+        else:
+            pedidos_lista = carregar_json("pedidos.json")
+            count = len(pedidos_lista)
+            if pedidos_lista:
+                last_p = sorted(pedidos_lista, key=lambda p: p.get("created_at") or p.get("data_pedido_iso", ""), reverse=True)[0]
+                latest_id = last_p.get("id", "")
+                latest_time = last_p.get("created_at") or last_p.get("data_pedido_iso", "")
+                latest_cliente = last_p.get("cliente", "")
+                latest_produto = last_p.get("produto_nome", "")
+                latest_origem = last_p.get("origem", "web")
+    except Exception as ex:
+        logger.warning(f"Erro em api_pedidos_ultimos: {ex}")
+
+    return jsonify({
+        "count": count,
+        "latest_id": latest_id,
+        "latest_time": latest_time,
+        "latest_cliente": latest_cliente,
+        "latest_produto": latest_produto,
+        "latest_origem": latest_origem,
     })
 
 
